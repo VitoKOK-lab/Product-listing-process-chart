@@ -7,8 +7,8 @@ const MAX_EDGE = 1920;
 const STEP_ORDER = ['raw', 'listing', 'review', 'assign', 'optimizing', 'final_review', 'done'];
 const FLOW_COLS = ['raw', 'listing', 'review', 'assign', 'optimizing', 'final_review'];
 const STEP_COLOR = {
-  raw: '#3D4F7A', listing: '#1B7F8C', review: '#1E4E8C', assign: '#B8741A',
-  optimizing: '#6B3FA0', final_review: '#1E4E8C', done: '#0E7C5A',
+  raw: '#9B8AE0', listing: '#4FBFA8', review: '#6AA3EE', assign: '#F2A65A',
+  optimizing: '#E27BB4', final_review: '#7F8CE6', done: '#45B98A',
 };
 const REASON = { photo: '照片', copy: '文案', price: '價格' };
 const KIND = { raw: '原圖', opt: '優化截圖' };
