@@ -380,24 +380,69 @@ function isMineCell(c) {
   return c.holders?.includes(S.me.id) || c.owner === S.me.id || c.holder_id === S.me.id || (c.step === 'assign' && isMkt());
 }
 
-function ovCell(r, c) {
-  const mine = isMineCell(c);
-  const cls = ['tile', `s-${c.state}`, mine ? 'mine' : 'other', c.state === 'current' ? `c-${c.color}` : ''].join(' ');
-  const wrap = (inner) => `<td class="ov-td"><div class="${cls}" style="--sc:${STEP_COLOR[c.step]}">${inner}</div></td>`;
-  if (c.step === 'assign') {
-    if (c.state === 'current') return wrap(`<span class="pname">待行銷指定</span><span class="mono hrs">等 ${esc(fmtWork(c.held))}</span>`);
-    if (c.state === 'done') return wrap(`<span class="pname">✓ 已指定</span><span class="mono hrs">等了 ${esc(fmtWork(c.held))}</span>`);
-    return wrap('<span class="faint">—</span>');
-  }
+// 每件商品一條賽道：走過的路段填滿，目前位置一顆標記，一眼比出誰走到哪
+function cellTip(c) {
+  if (c.step === 'assign') return `${stepLabel(c.step)}\n等待 ${fmtWork(c.held)}`;
   const person = member(c.state === 'current' ? c.holder_id : c.state === 'done' ? c.holders[c.holders.length - 1] : c.owner);
-  if (c.state === 'future') return wrap(`<span class="pname">${esc(person?.name ?? '—')}</span><span class="hrs faint">待接手</span>`);
-  const rounds = c.rounds > 1 ? `<span class="rounds">第 ${c.rounds} 輪</span>` : '';
-  const v = c.variance;
-  return wrap(`
-    <span class="pname">${c.state === 'done' ? '<i class="ck">✓</i>' : '<i class="live"></i>'}${esc(person?.name ?? '—')}${rounds}</span>
-    <span class="mono hrs">${esc(fmtWork(c.held))}${c.budget != null ? `<small> / ${esc(fmtWork(c.budget))}</small>` : ''}</span>
-    ${v != null && v !== 0 ? `<span class="var ${varCls(v)}">${v > 0 ? '+' : '−'}${esc(fmtWork(Math.abs(v)))}</span>` : ''}`);
+  const lines = [`${stepLabel(c.step)}・${person?.name ?? '未指定'}`];
+  if (c.state !== 'future') lines.push(`經手 ${fmtWork(c.held)}${c.budget != null ? `／標準 ${fmtWork(c.budget)}` : ''}`);
+  if (c.variance) lines.push(c.variance > 0 ? `領先 ${fmtWork(c.variance)}` : `落後 ${fmtWork(-c.variance)}`);
+  if (c.rounds > 1) lines.push(`退回重做，第 ${c.rounds} 輪`);
+  if (c.state === 'future') lines.push('尚未開始');
+  return lines.join('\n');
 }
+
+function laneRow(r) {
+  const n = FLOW_COLS.length;
+  const cur = r.done ? n - 1 : FLOW_COLS.indexOf(r.step);
+  const at = (i) => ((i + 0.5) / n) * 100;
+  const fillW = r.done ? at(n - 1) - at(0) : at(cur) - at(0);
+  const nodes = r.cells.map((c, i) => {
+    const mine = isMineCell(c);
+    const tip = esc(cellTip(c));
+    if (i === cur && !r.done) {
+      const late = ['yellow', 'red', 'rush'].includes(c.color);
+      const person = c.step === 'assign' ? '待行銷指定' : (member(c.holder_id)?.name ?? '—');
+      const time = c.step === 'assign' ? `等 ${fmtWork(c.held)}` : `${fmtWork(c.held)}${c.budget != null ? ` / ${fmtWork(c.budget)}` : ''}`;
+      const flag = c.color === 'rush' ? '急件' : late ? '超時' : c.rounds > 1 ? `第 ${c.rounds} 輪` : '';
+      return `<div class="pin ${mine ? 'mine' : 'other'} st-${c.color}" style="left:${at(i)}%" data-tip="${tip}" tabindex="0">
+        <b>${esc(person)}</b><span class="mono">${esc(time)}</span>${flag ? `<em>${esc(flag)}</em>` : ''}</div>`;
+    }
+    const state = i < cur || r.done ? 'done' : 'future';
+    const late = state === 'done' && c.variance < 0;
+    return `<span class="node ${state} ${mine ? 'mine' : 'other'} ${late ? 'late' : ''}" style="left:${at(i)}%" data-tip="${tip}" tabindex="0"></span>`;
+  }).join('');
+  return `<div class="lane-row ${r.cells.some(isMineCell) ? 'row-mine' : ''}">
+    <div class="lane-name"><a href="#/p/${r.id}">${esc(r.name)}</a>${r.opt?.rush ? '<span class="tag rush">急件</span>' : ''}</div>
+    <div class="lane">
+      <div class="rail" style="left:${at(0)}%;right:${100 - at(n - 1)}%"></div>
+      <div class="rail-fill" style="left:${at(0)}%;width:${fillW}%"></div>
+      ${nodes}
+    </div>
+    <div class="lane-var"><span class="var big ${varCls(r.variance)}">${esc(varTxt(r.variance))}</span></div>
+    <div class="lane-ret mono ${r.returns ? 'over' : 'faint'}">${r.returns ? `退 ${r.returns}` : '—'}</div>
+  </div>`;
+}
+
+// 滑過節點顯示細節
+(() => {
+  const tip = document.createElement('div');
+  tip.id = 'tip';
+  tip.hidden = true;
+  document.body.appendChild(tip);
+  const show = (el) => {
+    tip.textContent = el.dataset.tip;
+    tip.hidden = false;
+    const b = el.getBoundingClientRect();
+    tip.style.left = `${Math.min(window.innerWidth - tip.offsetWidth - 8, Math.max(8, b.left + b.width / 2 - tip.offsetWidth / 2))}px`;
+    tip.style.top = `${b.top - tip.offsetHeight - 10}px`;
+  };
+  document.addEventListener('mouseover', (e) => { const el = e.target.closest('[data-tip]'); if (el) show(el); });
+  document.addEventListener('mouseout', (e) => { if (e.target.closest('[data-tip]')) tip.hidden = true; });
+  document.addEventListener('focusin', (e) => { const el = e.target.closest('[data-tip]'); if (el) show(el); });
+  document.addEventListener('focusout', () => { tip.hidden = true; });
+  window.addEventListener('scroll', () => { tip.hidden = true; }, { passive: true });
+})();
 
 async function viewOverview() {
   const q = S.ovBatch == null ? '' : `?batch=${S.ovBatch}`;
@@ -431,23 +476,17 @@ async function viewOverview() {
       <div class="kpi-chip k-ruby"><span>落後</span><b class="mono">${behind}</b></div>
       <div class="kpi-chip k-topaz"><span>退件</span><b class="mono">${returns}</b></div>
       <span class="spacer"></span>
-      <div class="legend"><span class="lg mine"></span>我負責的<span class="lg other"></span>其他人<span class="var ahead">+領先</span><span class="var behind">−落後</span></div>
+      <div class="legend"><span class="lg-node done"></span>已走過<span class="lg-node late"></span>該步落後<span class="lg-pin"></span>目前位置<span class="lg-node mine"></span>我負責的</div>
       <div class="seg"><button data-sort="progress" class="${S.ovSort === 'progress' ? 'on' : ''}">依進度</button><button data-sort="behind" class="${S.ovSort === 'behind' ? 'on' : ''}">落後優先</button></div>
     </div>
-    <div class="card ov-wrap">
-      <table class="ov">
-        <thead><tr><th class="ov-name">商品</th>${FLOW_COLS.map((c) => `<th class="step-th" style="--sc:${STEP_COLOR[c]}"><span class="th-dot"></span>${esc(stepLabel(c))}</th>`).join('')}<th class="num">領先／落後</th><th class="num">退件</th></tr></thead>
-        <tbody>
-          ${active.map((r) => `<tr class="${mineRow(r) ? 'row-mine' : ''}">
-            <td class="ov-name"><a href="#/p/${r.id}">${esc(r.name)}</a>
-              ${r.opt?.rush ? '<span class="tag rush">急件</span>' : ''}
-              ${d.batch_id === 0 ? `<div class="muted">${esc(batchName(r.batch_id))}</div>` : ''}</td>
-            ${r.cells.map((c) => ovCell(r, c)).join('')}
-            <td class="num"><span class="var big ${varCls(r.variance)}">${esc(varTxt(r.variance))}</span></td>
-            <td class="num mono ${r.returns ? 'over' : 'faint'}">${r.returns || '0'}</td>
-          </tr>`).join('') || `<tr><td colspan="${FLOW_COLS.length + 3}" class="empty">這批沒有進行中的商品</td></tr>`}
-        </tbody>
-      </table>
+    <div class="card lanes">
+      <div class="lane-row lane-head">
+        <div class="lane-name">商品<span class="muted">（依進度排序）</span></div>
+        <div class="lane">${FLOW_COLS.map((c, i) => `<span class="lane-step" style="left:${((i + 0.5) / FLOW_COLS.length) * 100}%;--sc:${STEP_COLOR[c]}">${esc(stepLabel(c))}</span>`).join('')}</div>
+        <div class="lane-var">領先／落後</div>
+        <div class="lane-ret">退件</div>
+      </div>
+      ${active.map(laneRow).join('') || '<p class="empty">這批沒有進行中的商品</p>'}
     </div>
     <h2 class="done-h">已完成 <span class="muted mono">${done.length}</span></h2>
     <div class="card ov-wrap">
@@ -463,7 +502,7 @@ async function viewOverview() {
         </tr>`).join('') || '<tr><td colspan="6" class="empty">還沒有完成的商品</td></tr>'}</tbody>
       </table>
     </div>
-    <p class="muted" style="margin-top:12px">每一格：負責人・經手時間／標準時間・領先(+)或落後(−)。時間從這個人接到工作才開始算，只算上班時間；前一關拖延不會算到下一關。</p>`;
+    <p class="muted" style="margin-top:12px">滑鼠移到圓點可看每一步的負責人、經手時間與領先落後。時間從這個人接到工作才開始算，只算上班時間；前一關拖延不會算到下一關。</p>`;
   $app.querySelectorAll('[data-batch]').forEach((b) => { b.onclick = () => { S.ovBatch = Number(b.dataset.batch); viewOverview(); }; });
   $app.querySelectorAll('[data-sort]').forEach((b) => { b.onclick = () => { S.ovSort = b.dataset.sort; viewOverview(); }; });
   const bo = document.getElementById('bulk-opt');

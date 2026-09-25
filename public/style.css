@@ -577,3 +577,70 @@ table.rank tbody tr:hover { background: var(--surface-2); }
 .tile.mine.s-current .rounds { background: rgba(255, 255, 255, .9); color: var(--ruby); }
 #nav a:has(.badge) { padding-right: 26px; }
 #nav .badge { top: 50%; right: 6px; transform: translateY(-50%); }
+
+/* =====================================================================
+   全覽 v4：賽道式進度（每件一條軌道，一眼看出走到哪）
+   ===================================================================== */
+.lanes { padding: 6px 18px 10px; overflow-x: auto; }
+.lane-row {
+  display: grid; grid-template-columns: 210px minmax(700px, 1fr) 140px 56px; align-items: center; gap: 12px;
+  min-height: 58px; border-bottom: 1px solid rgba(22, 28, 45, .05); border-radius: 12px; padding: 0 8px;
+  transition: background .15s;
+}
+.lane-row:last-child { border-bottom: 0; }
+.lane-row:not(.lane-head):hover { background: rgba(30, 78, 140, .04); }
+.lane-head { min-height: 44px; border-bottom: 1px solid var(--line); border-radius: 0; font-size: 13px; color: var(--ink-2); font-weight: 700; }
+.lane-head .lane-name .muted { font-weight: 400; margin-left: 6px; }
+.lane-name { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.lane-name a { color: var(--ink); font-weight: 500; font-size: 14.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lane-name a:hover { color: var(--sapphire); }
+.row-mine .lane-name a { color: var(--sapphire); font-weight: 700; }
+.lane-var { text-align: right; }
+.lane-ret { text-align: right; font-size: 13px; }
+.lane { position: relative; height: 58px; }
+.lane-head .lane { height: 44px; }
+.lane-step { position: absolute; top: 50%; transform: translate(-50%, -50%); white-space: nowrap; color: var(--ink); display: flex; align-items: center; gap: 6px; }
+.lane-step::before { content: ''; width: 8px; height: 8px; border-radius: 3px; background: var(--sc); }
+
+.rail, .rail-fill { position: absolute; top: 50%; height: 6px; margin-top: -3px; border-radius: 3px; }
+.rail { background: #E7E9EF; box-shadow: inset 0 1px 2px rgba(22, 28, 45, .10); }
+.rail-fill { background: linear-gradient(90deg, #A7AEBE, #4A5670); box-shadow: 0 1px 2px rgba(22, 28, 45, .15); transition: width .5s var(--ease); }
+.row-mine .rail-fill { background: linear-gradient(90deg, #8FA9D2, var(--sapphire)); }
+
+.node { position: absolute; top: 50%; width: 14px; height: 14px; border-radius: 50%; transform: translate(-50%, -50%); cursor: default; z-index: 1; }
+.node.done { background: #8A92A4; box-shadow: 0 0 0 3px var(--surface), 0 1px 3px rgba(22, 28, 45, .25); }
+.node.done.mine { background: var(--sapphire); box-shadow: 0 0 0 3px var(--surface), 0 0 0 5px rgba(30, 78, 140, .25); }
+.node.done.late { background: var(--ruby); }
+.node.future { width: 12px; height: 12px; background: var(--surface); box-shadow: inset 0 0 0 2px #D3D7DF; }
+.node.future.mine { box-shadow: inset 0 0 0 2.5px var(--sapphire), 0 0 0 3px rgba(30, 78, 140, .12); }
+.node:hover, .node:focus-visible { transform: translate(-50%, -50%) scale(1.35); outline: none; }
+
+.pin {
+  position: absolute; top: 50%; transform: translate(-50%, -50%); z-index: 2;
+  display: flex; align-items: center; gap: 8px; white-space: nowrap; padding: 6px 12px; border-radius: 999px;
+  font-size: 13px; color: #fff; cursor: default;
+  background: linear-gradient(180deg, #4A5670, #2F3A52);
+  box-shadow: 0 0 0 3px var(--surface), 0 6px 14px -4px rgba(22, 28, 45, .45), inset 0 1px 0 rgba(255, 255, 255, .18);
+}
+.pin b { font-weight: 700; }
+.pin .mono { font-size: 12px; opacity: .85; }
+.pin em { font-style: normal; font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 999px; background: rgba(255, 255, 255, .22); }
+.pin.mine { background: linear-gradient(180deg, #3A6FBF, var(--sapphire)); box-shadow: 0 0 0 3px var(--surface), 0 0 0 6px rgba(30, 78, 140, .22), 0 8px 18px -4px rgba(30, 78, 140, .55), inset 0 1px 0 rgba(255, 255, 255, .25); }
+.pin.st-yellow { background: linear-gradient(180deg, #CC8B2C, var(--topaz)); }
+.pin.st-red, .pin.st-rush { background: linear-gradient(180deg, #CC3C56, var(--ruby)); }
+.pin:hover, .pin:focus-visible { outline: none; transform: translate(-50%, -50%) scale(1.04); }
+
+#tip {
+  position: fixed; z-index: 80; pointer-events: none; white-space: pre-line; max-width: 260px;
+  background: #1F2430; color: #fff; font-size: 13px; line-height: 1.55; padding: 8px 12px; border-radius: 10px;
+  box-shadow: var(--e3);
+}
+
+.legend { gap: 6px; }
+.legend > span { margin-left: 8px; }
+.lg-node { display: inline-block; width: 12px; height: 12px; border-radius: 50%; }
+.lg-node.done { background: #8A92A4; }
+.lg-node.late { background: var(--ruby); }
+.lg-node.mine { background: var(--sapphire); box-shadow: 0 0 0 3px rgba(30, 78, 140, .2); }
+.lg-pin { display: inline-block; width: 26px; height: 14px; border-radius: 999px; background: linear-gradient(180deg, #4A5670, #2F3A52); }
+.lane { margin: 0 88px; }
