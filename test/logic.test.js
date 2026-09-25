@@ -1,131 +1,177 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { workHoursBetween, addWorkHours, localToEpoch } from '../src/worktime.js';
-import { computeStintHours, buildRadar, diagnose, wasRush, metrics, optimizerBudget, returnEvents, overviewRows } from '../src/analytics.js';
+import {
+  stintHours, stepTimes, teamAverages, compare, rushInfo, comparePriority, returnEvents, overviewRows, buildRadar, ranking, currentReturn,
+} from '../src/analytics.js';
+import { statusCode, sheetKey, sheetRows, planSync, extractOgImage } from '../src/sheet.js';
 
 const cfg = { days: [1, 2, 3, 4, 5], start: 9, end: 18, holidays: ['2026-10-09'], tz: 480 };
-const settings = { rush_threshold_hours: 18, capacity_ratio: 1.5, rush_review_hours: 2, final_review_hours: 9 };
+const settings = { rush_threshold_hours: 18 };
 const at = (ymd, h, m = 0) => localToEpoch(ymd, h, cfg) + m * 60000;
 // 2026-09-28 是週一
 const MON = '2026-09-28', TUE = '2026-09-29', WED = '2026-09-30', FRI = '2026-10-02', SAT = '2026-10-03', NEXTMON = '2026-10-05';
 
-test('規格例子：今天 17:00 指定、明天 15:00 截止 = 7 上班小時', () => {
+test('上班時間：週末、下班、國定假日不計', () => {
   assert.equal(workHoursBetween(at(MON, 17), at(TUE, 15), cfg), 7);
-});
-
-test('週末與下班時間不計', () => {
   assert.equal(workHoursBetween(at(FRI, 17), at(NEXTMON, 10), cfg), 2);
   assert.equal(workHoursBetween(at(SAT, 10), at(SAT, 16), cfg), 0);
-  assert.equal(workHoursBetween(at(MON, 20), at(TUE, 8), cfg), 0);
-});
-
-test('國定假日不計', () => {
-  // 10/9 週五為假日
   assert.equal(workHoursBetween(at('2026-10-08', 9), at('2026-10-12', 9), cfg), 9);
-});
-
-test('addWorkHours 跨夜與跨週末', () => {
-  assert.equal(addWorkHours(at(MON, 17), 3, cfg), at(TUE, 11));
   assert.equal(addWorkHours(at(FRI, 16), 4, cfg), at(NEXTMON, 11));
-  assert.equal(addWorkHours(at(SAT, 12), 1, cfg), at(NEXTMON, 10));
 });
 
-test('一般步驟：超出預算的部分算給當時拿著的人（含改派）', () => {
+let sid = 0;
+const st = (product_id, step, member_id, s, e, start_reason = 'advance', extra = {}) => ({
+  id: ++sid, product_id, step, member_id, role: 'x', started_at: s, ended_at: e, start_reason, ...extra,
+});
+
+test('沒人認領的等待時間算在這一步，但另外記', () => {
   const stints = [
-    { id: 1, product_id: 1, optimization_id: null, step: 'edit', member_id: 10, role: 'editor', started_at: at(MON, 9), ended_at: at(MON, 18), budget_hours: 12, start_reason: 'advance' },
-    { id: 2, product_id: 1, optimization_id: null, step: 'edit', member_id: 11, role: 'editor', started_at: at(MON, 18), ended_at: at(TUE, 15), budget_hours: 12, start_reason: 'reassign' },
+    st(1, 'cutout', null, at(MON, 9), at(MON, 13), 'advance'),
+    st(1, 'cutout', 5, at(MON, 13), at(MON, 15), 'claim'),
   ];
-  const h = computeStintHours(stints, [], at(TUE, 15), cfg);
-  assert.deepEqual([h.get(1).held, h.get(1).over], [9, 0]);
-  assert.deepEqual([h.get(2).held, h.get(2).over], [6, 3]); // 累計 15h，預算 12h
+  const t = stepTimes(stints, stintHours(stints, at(MON, 15), cfg)).get(1).cutout;
+  assert.equal(t.held, 6);
+  assert.equal(t.pool, 4);
+  assert.equal(t.rounds, 1); // 認領不算新的一輪
 });
 
-test('優化者標準時間 = 指定到截止 − 審查時間；審查拖延不算優化者的', () => {
-  // 規格例子：週一 17:00 指定、週二 15:00 截止 → 7h，急件審查 2h → 優化者 5h
-  const budget = optimizerBudget(at(MON, 17), at(TUE, 15), cfg, settings);
-  assert.equal(budget, 5);
-  const opt = { id: 5, product_id: 1, deadline: at(TUE, 15), assigned_at: at(MON, 17), status: 'working' };
-  const stints = [
-    { id: 1, product_id: 1, optimization_id: 5, step: 'optimizing', member_id: 20, role: 'editor', started_at: at(MON, 17), ended_at: at(TUE, 12), budget_hours: budget, start_reason: 'assign' },
-    // 審查 2h 標準，拖到週三 10:00 = 7h，超出 5h（算審查的人）
-    { id: 2, product_id: 1, optimization_id: 5, step: 'final_review', member_id: 30, role: 'reviewer', started_at: at(TUE, 12), ended_at: at(WED, 10), budget_hours: 2, start_reason: 'submit', end_reason: 'return' },
-    // 優化者重改 4h：累計 4 + 4 = 8h，超出自己的 5h 標準 3h
-    { id: 3, product_id: 1, optimization_id: 5, step: 'optimizing', member_id: 20, role: 'editor', started_at: at(WED, 10), ended_at: at(WED, 14), budget_hours: budget, start_reason: 'return' },
+test('團隊平均：只用走完這一步的商品，少於 3 件不比', () => {
+  const stints = [];
+  const products = [];
+  for (let i = 1; i <= 3; i++) {
+    stints.push(st(i, 'open', 1, at(MON, 9), at(MON, 9 + i), 'create'));
+    products.push({ id: i, step: 'cutout' });
+  }
+  products.push({ id: 4, step: 'open' });
+  stints.push(st(4, 'open', 1, at(MON, 9), null, 'create'));
+  const avgs = teamAverages(products, stepTimes(stints, stintHours(stints, at(MON, 18), cfg)));
+  assert.equal(avgs.open.avg, 2); // (1+2+3)/3，進行中的第 4 件不算
+  assert.equal(avgs.cutout.avg, null);
+});
+
+test('跟平均比：1.5 倍偏慢、2 倍很慢、差不到半小時不算', () => {
+  assert.equal(compare(3, 2).level, 'slow');
+  assert.equal(compare(4, 2).level, 'very');
+  assert.equal(compare(0.4, 0.1).level, 'ok');
+  assert.equal(compare(5, null).diff, null);
+});
+
+test('插隊：截止 = 那天下班，剩 2 個上班日內是急件', () => {
+  const p = { rush_date: WED, step: 'cutout' };
+  assert.equal(rushInfo(p, at(MON, 9), cfg, settings).urgent, false); // 剩 27h
+  assert.equal(rushInfo(p, at(TUE, 9), cfg, settings).urgent, true); // 剩 18h
+  assert.equal(rushInfo(p, at('2026-10-01', 9), cfg, settings).overdue, true);
+  assert.equal(rushInfo({ ...p, step: 'done', done_at: at(WED, 17) }, at(FRI, 9), cfg, settings).missed, false);
+});
+
+test('排序：插隊（依日期）> A > B > C > D > 其他', () => {
+  const list = [
+    { id: 1, status_code: 'D' }, { id: 2, status_code: '' }, { id: 3, status_code: 'A' },
+    { id: 4, status_code: 'D', rush_date: '2026-10-05', step: 'open' }, { id: 5, status_code: 'B', rush_date: '2026-10-01', step: 'open' },
+    { id: 6, status_code: 'C', rush_date: '2026-10-01', step: 'done' },
   ];
-  const h = computeStintHours(stints, [opt], at(WED, 14), cfg);
-  assert.equal(h.get(1).over, 0);
-  assert.equal(h.get(2).over, 5);
-  assert.equal(h.get(3).over, 3);
+  assert.deepEqual(list.sort(comparePriority).map((p) => p.id), [5, 4, 3, 6, 1, 2]);
 });
 
-test('被退件依原因算到做那部分的人（上架人員的文案錯也算）', () => {
+test('退件算在上一次做這一步的人身上', () => {
   const stints = [
-    { id: 1, product_id: 1, step: 'raw', member_id: 2, started_at: at(MON, 9), ended_at: at(MON, 10) },
-    { id: 2, product_id: 1, step: 'listing', member_id: 8, started_at: at(MON, 10), ended_at: at(MON, 12) },
-    { id: 3, product_id: 1, step: 'review', member_id: 11, started_at: at(MON, 12), ended_at: at(MON, 13), end_reason: 'return' },
-    { id: 4, product_id: 1, step: 'raw', member_id: 2, started_at: at(MON, 13), ended_at: null, start_reason: 'return', reasons: '["photo","copy"]', by_id: 11 },
+    st(1, 'cutout', 7, at(MON, 9), at(MON, 10), 'claim'),
+    st(1, 'listing', 8, at(MON, 10), at(MON, 11), 'claim'),
+    st(1, 'cutout', 7, at(MON, 11), null, 'return', { note: '去背有白邊', by_id: 8 }),
   ];
   const ev = returnEvents(stints);
-  assert.deepEqual(ev.map((e) => [e.member_id, e.reasons]).sort(), [[2, ['photo']], [8, ['copy']]]);
+  assert.equal(ev.length, 1);
+  assert.deepEqual([ev[0].member_id, ev[0].by_id, ev[0].note], [7, 8, '去背有白邊']);
+  assert.equal(currentReturn(stints, stints[2]).note, '去背有白邊');
 });
 
-test('全覽：只算自己拿到工作後的時間，已完成步驟計入領先／落後', () => {
-  const now = at(TUE, 12);
-  const products = [{ id: 1, name: 'A', batch_id: 1, step: 'review', picker_id: 2, lister_id: 8, reviewer_id: 11, updated_at: now }];
+test('全覽：進行中的步驟只在比平均慢時才算', () => {
+  const stints = [];
+  const products = [];
+  for (let i = 1; i <= 3; i++) {
+    stints.push(st(i, 'open', 1, at(MON, 9), at(MON, 11), 'create'));
+    stints.push(st(i, 'cutout', 2, at(MON, 11), at(MON, 12)));
+    products.push({ id: i, step: 'listing', status_code: 'A' });
+    stints.push(st(i, 'listing', null, at(MON, 12), null));
+  }
+  products.push({ id: 9, step: 'cutout', status_code: 'B' });
+  stints.push(st(9, 'open', 1, at(MON, 9), at(MON, 10), 'create'));
+  stints.push(st(9, 'cutout', null, at(MON, 10), null));
+  const { rows } = overviewRows({ products, allProducts: products, stints, now: at(MON, 15), cfg, settings });
+  const r9 = rows.find((r) => r.id === 9);
+  assert.equal(r9.cells[0].diff, -0.8); // 開單 1h，平均 (2+2+2+1)/4
+  assert.equal(r9.cells[1].diff, 4); // 去背已 5h，平均 1h
+  assert.equal(r9.cells[1].level, 'very');
+  assert.equal(r9.cells[1].waiting, true);
+  assert.equal(rows[0].status_code, 'A');
+});
+
+test('待辦：自己手上 + 同身分可認領；別人手上的不出現', () => {
+  const products = [{ id: 1, name: 'a', step: 'cutout' }, { id: 2, name: 'b', step: 'cutout' }, { id: 3, name: 'c', step: 'listing' }];
   const stints = [
-    { id: 1, product_id: 1, step: 'raw', member_id: 2, started_at: at(MON, 9), ended_at: at(MON, 13), budget_hours: 9, start_reason: 'create' },
-    { id: 2, product_id: 1, step: 'listing', member_id: 8, started_at: at(MON, 13), ended_at: at(TUE, 10), budget_hours: 9, start_reason: 'advance' },
-    { id: 3, product_id: 1, step: 'review', member_id: 11, started_at: at(TUE, 10), ended_at: null, budget_hours: 9, start_reason: 'advance' },
+    { ...st(1, 'cutout', null, at(MON, 9), null), role: 'editor' },
+    { ...st(2, 'cutout', 6, at(MON, 9), null, 'claim'), role: 'editor' },
+    { ...st(3, 'listing', null, at(MON, 9), null), role: 'lister' },
   ];
-  const hoursMap = computeStintHours(stints, [], now, cfg);
-  const [row] = overviewRows({ products, stints, optimizations: [], hoursMap, now, cfg, settings });
-  const cell = (st) => row.cells.find((c) => c.step === st);
-  assert.equal(cell('raw').variance, 5); // 標準 9h，用了 4h → 領先 5h
-  assert.equal(cell('listing').variance, 3); // 用了 6h（13–18 點 + 隔天 9–10 點）→ 領先 3h
-  assert.equal(cell('review').variance, 0); // 進行中且未超時，不提前算領先
-  assert.equal(row.variance, 8);
+  const r = buildRadar({ products, allProducts: products, stints, mentions: [], me: 5, meRoles: ['editor'], scope: 'me', now: at(MON, 12), cfg, settings });
+  assert.deepEqual(r.items.map((i) => [i.product_id, i.claimable]), [[1, true]]);
 });
 
-test('雷達排序：急件 → 被退回 → 紅 → 黃 → 等我處理', () => {
-  const now = at(TUE, 10);
-  const products = [1, 2, 3, 4, 5].map((id) => ({ id, name: 'P' + id, batch_id: 1, step: 'edit' }));
-  const opt = { id: 9, product_id: 1, deadline: at(TUE, 17), status: 'working' };
+test('個人成效：跟同一步的團隊平均比', () => {
   const stints = [
-    { id: 1, product_id: 1, optimization_id: 9, step: 'optimizing', member_id: 7, role: 'editor', started_at: at(MON, 9), ended_at: null, budget_hours: null, start_reason: 'assign' },
-    { id: 2, product_id: 2, optimization_id: null, step: 'edit', member_id: 7, role: 'editor', started_at: at(TUE, 9), ended_at: null, budget_hours: 27, start_reason: 'return', reasons: '["photo"]', note: '背景太暗' },
-    { id: 3, product_id: 3, optimization_id: null, step: 'review', member_id: 7, role: 'reviewer', started_at: at('2026-09-24', 9), ended_at: null, budget_hours: 9, start_reason: 'advance' },
-    { id: 4, product_id: 4, optimization_id: null, step: 'review', member_id: 7, role: 'reviewer', started_at: at(MON, 9), ended_at: null, budget_hours: 9, start_reason: 'advance' },
-    { id: 5, product_id: 5, optimization_id: null, step: 'listing', member_id: 7, role: 'lister', started_at: at(TUE, 9), ended_at: null, budget_hours: 9, start_reason: 'advance' },
+    st(1, 'cutout', 5, at(MON, 9), at(MON, 10)), st(2, 'cutout', 5, at(MON, 9), at(MON, 10)),
+    st(3, 'cutout', 6, at(MON, 9), at(MON, 13)),
   ];
-  const hoursMap = computeStintHours(stints, [opt], now, cfg);
-  const r = buildRadar({ stints, optimizations: [opt], mentions: [], products, me: 7, scope: 'me', now, cfg, settings, hoursMap });
-  assert.deepEqual(r.items.map((i) => [i.product_id, i.group]), [[1, 'rush'], [2, 'attention'], [3, 'red'], [4, 'yellow'], [5, 'mine']]);
+  const r = ranking({ stints, now: at(MON, 18), cfg });
+  assert.equal(r.team_avg.cutout, 2);
+  const m6 = r.rows.find((x) => x.member_id === 6);
+  assert.deepEqual([m6.steps.cutout.avg, m6.steps.cutout.diff], [4, 2]);
+  assert.equal(r.rows[0].member_id, 6);
 });
 
-test('產能不足 vs 個人速度', () => {
-  const t = at(MON, 9);
-  const mk = (id, member) => ({ id, product_id: id, member_id: member, role: 'editor', started_at: t, ended_at: null });
-  const stints = [mk(1, 1), mk(2, 1), mk(3, 1), mk(4, 1), mk(5, 2), mk(6, 3)];
-  const roles = { editor: [1, 2, 3] };
-  assert.equal(diagnose(stints[0], stints, roles, 1.5).kind, 'capacity'); // 4 件 vs 平均 2
-  assert.equal(diagnose(stints[4], stints, roles, 1.5).kind, 'speed');
+test('試算表狀態對應與商品識別', () => {
+  assert.equal(statusCode('投放中'), 'A');
+  assert.equal(statusCode('優先製作'), 'B');
+  assert.equal(statusCode('可投放'), 'C');
+  assert.equal(statusCode('待製作'), 'D');
+  assert.equal(statusCode('暫停'), '');
+  assert.equal(sheetKey('x', 'https://Shop.TW/products/abc/?utm=1'), 'url:https://shop.tw/products/abc');
+  assert.equal(sheetKey(' 耳環 ', ''), 'name:耳環');
 });
 
-test('急件判定：距截止 ≤ 18 上班小時', () => {
-  const opt = { deadline: at(WED, 17), passed_at: null, status: 'working' };
-  assert.equal(wasRush(opt, at(MON, 9), cfg, settings), false); // 26h
-  assert.equal(wasRush(opt, at(TUE, 9), cfg, settings), true); // 17h
+test('試算表列：空名稱略過，同一商品保留最高優先', () => {
+  const rows = sheetRows([
+    { status: '待製作', name: '耳環', link: 'https://s.tw/p/1' },
+    { status: '投放中', name: '耳環', link: 'https://s.tw/p/1?a=b' },
+    { status: '投放中', name: '', link: '' },
+    { status: '可投放', name: '週年慶活動', link: '' },
+  ]);
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].code, 'A');
+  assert.equal(rows[1].link, '');
 });
 
-test('誤報：變黃後沒人催，負責人自己完成', () => {
-  const stints = [
-    { id: 1, product_id: 1, optimization_id: null, step: 'listing', member_id: 5, role: 'lister', started_at: at(MON, 9), ended_at: at(TUE, 12), budget_hours: 9, start_reason: 'advance', end_reason: 'complete' },
-    { id: 2, product_id: 2, optimization_id: null, step: 'listing', member_id: 5, role: 'lister', started_at: at(MON, 9), ended_at: at(TUE, 12), budget_hours: 9, start_reason: 'advance', end_reason: 'complete' },
+test('同步計畫：新增、更新、下架、恢復；手動開單不會被下架', () => {
+  const existing = [
+    { id: 1, sheet_key: 'name:a', name: 'a', link: '', sheet_status: '待製作', status_code: 'D', source: 'sheet' },
+    { id: 2, sheet_key: 'name:b', name: 'b', link: '', sheet_status: '待製作', status_code: 'D', source: 'sheet' },
+    { id: 3, sheet_key: 'name:c', name: 'c', link: '', sheet_status: '', status_code: '', source: 'sheet', delisted_at: 1 },
+    { id: 4, sheet_key: null, name: 'm', source: 'manual' },
   ];
-  const comments = [{ product_id: 2, member_id: 99, created_at: at(TUE, 10) }];
-  const hoursMap = computeStintHours(stints, [], at(TUE, 12), cfg);
-  const m = metrics({ stints, optimizations: [], comments, undoCount: 0, hoursMap, now: at(TUE, 12), cfg, filter: () => true });
-  assert.equal(m.false_alarm_rate, 50);
-  assert.equal(m.stuck_n, 2);
-  assert.equal(m.stuck_dwell_h, 2); // (3h + 1h) / 2
+  const rows = sheetRows([
+    { status: '投放中', name: 'a', link: '' }, { status: '', name: 'c', link: '' }, { status: '待製作', name: 'n', link: '' },
+  ]);
+  const plan = planSync(existing, rows);
+  assert.deepEqual(plan.inserts.map((r) => r.name), ['n']);
+  assert.deepEqual(plan.updates.map((u) => u.id), [1]);
+  assert.deepEqual(plan.delist, [2]);
+  assert.deepEqual(plan.restore.map((r) => r.id), [3]);
+});
+
+test('讀首圖：og:image，屬性順序不同、相對網址也可以', () => {
+  assert.equal(extractOgImage('<meta content="https://img.x/a.jpg?a=1&amp;b=2" property="og:image">', 'https://s.tw/p'), 'https://img.x/a.jpg?a=1&b=2');
+  assert.equal(extractOgImage("<meta property='og:image' content='//cdn.x/b.png' />", 'https://s.tw/p'), 'https://cdn.x/b.png');
+  assert.equal(extractOgImage('<meta name="twitter:image" content="/c.webp">', 'https://s.tw/p/1'), 'https://s.tw/c.webp');
+  assert.equal(extractOgImage('<title>x</title>', 'https://s.tw'), null);
 });

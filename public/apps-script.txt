@@ -1,0 +1,50 @@
+// TZG 上架跟進：讓系統讀取「銷售型-投廣素材」這一頁
+// 貼到試算表的「擴充功能 → Apps Script」，再部署成「網頁應用程式」
+const KEY = '__KEY__';            // 系統產生的密碼，不要外流
+const SHEET_NAME = '銷售型-投廣素材';
+const FIRST_ROW = 6;               // 第 5 列是標題，資料從第 6 列開始
+
+function doGet(e) {
+  if (!e || !e.parameter || e.parameter.key !== KEY) return out_({ error: '密碼錯誤' });
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
+  if (!sh) return out_({ error: '找不到「' + SHEET_NAME + '」這一頁' });
+  const last = sh.getLastRow();
+  if (last < FIRST_ROW) return out_({ sheet: SHEET_NAME, rows: [] });
+  // 只讀 A～D 欄：A 狀態、C 商品／活動、D 商品連結
+  const range = sh.getRange(FIRST_ROW, 1, last - FIRST_ROW + 1, 4);
+  const values = range.getDisplayValues();
+  const formulas = range.getFormulas();
+  let rich = [];
+  try { rich = range.getRichTextValues(); } catch (err) { rich = []; }
+  const rows = [];
+  for (let i = 0; i < values.length; i++) {
+    const name = String(values[i][2]).trim();
+    if (!name) continue;
+    let link = String(values[i][3]).trim();
+    if (!/^https?:\/\//.test(link)) {
+      link = linkOf_(rich[i] && rich[i][3]) || formulaLink_(formulas[i][3])
+        || linkOf_(rich[i] && rich[i][2]) || formulaLink_(formulas[i][2]) || '';
+    }
+    rows.push({ status: String(values[i][0]).trim(), name: name, link: link });
+  }
+  return out_({ sheet: SHEET_NAME, rows: rows });
+}
+
+// 儲存格裡的超連結
+function linkOf_(rt) {
+  if (!rt) return '';
+  if (rt.getLinkUrl()) return rt.getLinkUrl();
+  const runs = rt.getRuns();
+  for (let k = 0; k < runs.length; k++) if (runs[k].getLinkUrl()) return runs[k].getLinkUrl();
+  return '';
+}
+
+// =HYPERLINK("網址", "文字")
+function formulaLink_(f) {
+  const m = String(f || '').match(/HYPERLINK\(\s*"([^"]+)"/i);
+  return m ? m[1] : '';
+}
+
+function out_(o) {
+  return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON);
+}
