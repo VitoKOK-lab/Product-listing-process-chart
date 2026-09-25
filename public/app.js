@@ -382,23 +382,21 @@ function isMineCell(c) {
 
 function ovCell(r, c) {
   const mine = isMineCell(c);
-  const cls = ['ov-cell', `s-${c.state}`, mine ? 'mine' : 'other', c.state === 'current' ? `c-${c.color}` : ''].join(' ');
+  const cls = ['tile', `s-${c.state}`, mine ? 'mine' : 'other', c.state === 'current' ? `c-${c.color}` : ''].join(' ');
+  const wrap = (inner) => `<td class="ov-td"><div class="${cls}" style="--sc:${STEP_COLOR[c.step]}">${inner}</div></td>`;
   if (c.step === 'assign') {
-    const body = c.state === 'current' ? `<b>待行銷指定</b><span class="mono">等 ${esc(fmtWork(c.held))}</span>`
-      : c.state === 'done' ? `<span class="mono">等了 ${esc(fmtWork(c.held))}</span>` : '<span class="faint">—</span>';
-    return `<td class="${cls}" style="--sc:${STEP_COLOR[c.step]}">${body}</td>`;
+    if (c.state === 'current') return wrap(`<span class="pname">待行銷指定</span><span class="mono hrs">等 ${esc(fmtWork(c.held))}</span>`);
+    if (c.state === 'done') return wrap(`<span class="pname">✓ 已指定</span><span class="mono hrs">等了 ${esc(fmtWork(c.held))}</span>`);
+    return wrap('<span class="faint">—</span>');
   }
   const person = member(c.state === 'current' ? c.holder_id : c.state === 'done' ? c.holders[c.holders.length - 1] : c.owner);
-  if (c.state === 'future') {
-    return `<td class="${cls}" style="--sc:${STEP_COLOR[c.step]}"><span class="pname">${esc(person?.name ?? '—')}</span></td>`;
-  }
+  if (c.state === 'future') return wrap(`<span class="pname">${esc(person?.name ?? '—')}</span><span class="hrs faint">待接手</span>`);
   const rounds = c.rounds > 1 ? `<span class="rounds">第 ${c.rounds} 輪</span>` : '';
   const v = c.variance;
-  return `<td class="${cls}" style="--sc:${STEP_COLOR[c.step]}">
-    <span class="pname">${c.state === 'done' ? '✓ ' : ''}${esc(person?.name ?? '—')}${rounds}</span>
-    <span class="mono hrs">${esc(fmtWork(c.held))}${c.budget != null ? `<small>／${esc(fmtWork(c.budget))}</small>` : ''}</span>
-    ${v != null && v !== 0 ? `<span class="var ${varCls(v)}">${v > 0 ? '+' : '−'}${esc(fmtWork(Math.abs(v)))}</span>` : ''}
-  </td>`;
+  return wrap(`
+    <span class="pname">${c.state === 'done' ? '<i class="ck">✓</i>' : '<i class="live"></i>'}${esc(person?.name ?? '—')}${rounds}</span>
+    <span class="mono hrs">${esc(fmtWork(c.held))}${c.budget != null ? `<small> / ${esc(fmtWork(c.budget))}</small>` : ''}</span>
+    ${v != null && v !== 0 ? `<span class="var ${varCls(v)}">${v > 0 ? '+' : '−'}${esc(fmtWork(Math.abs(v)))}</span>` : ''}`);
 }
 
 async function viewOverview() {
@@ -427,18 +425,18 @@ async function viewOverview() {
       ${hasRole('picker') ? '<a class="btn" href="#/new">＋ 新增商品</a>' : ''}
     </div>
     <div class="ov-kpis">
-      <div><span>進行中</span><b class="mono">${active.length}</b></div>
-      <div><span>已完成</span><b class="mono" style="color:var(--emerald)">${done.length}</b></div>
-      <div><span>領先</span><b class="mono" style="color:var(--emerald)">${ahead}</b></div>
-      <div><span>落後</span><b class="mono" style="color:var(--ruby)">${behind}</b></div>
-      <div><span>退件總數</span><b class="mono">${returns}</b></div>
+      <div class="kpi-chip"><span>進行中</span><b class="mono">${active.length}</b></div>
+      <div class="kpi-chip k-emerald"><span>已完成</span><b class="mono">${done.length}</b></div>
+      <div class="kpi-chip k-emerald"><span>領先</span><b class="mono">${ahead}</b></div>
+      <div class="kpi-chip k-ruby"><span>落後</span><b class="mono">${behind}</b></div>
+      <div class="kpi-chip k-topaz"><span>退件</span><b class="mono">${returns}</b></div>
       <span class="spacer"></span>
       <div class="legend"><span class="lg mine"></span>我負責的<span class="lg other"></span>其他人<span class="var ahead">+領先</span><span class="var behind">−落後</span></div>
       <div class="seg"><button data-sort="progress" class="${S.ovSort === 'progress' ? 'on' : ''}">依進度</button><button data-sort="behind" class="${S.ovSort === 'behind' ? 'on' : ''}">落後優先</button></div>
     </div>
     <div class="card ov-wrap">
       <table class="ov">
-        <thead><tr><th class="ov-name">商品</th>${FLOW_COLS.map((c) => `<th style="--sc:${STEP_COLOR[c]}">${esc(stepLabel(c))}</th>`).join('')}<th class="num">領先／落後</th><th class="num">退件</th></tr></thead>
+        <thead><tr><th class="ov-name">商品</th>${FLOW_COLS.map((c) => `<th class="step-th" style="--sc:${STEP_COLOR[c]}"><span class="th-dot"></span>${esc(stepLabel(c))}</th>`).join('')}<th class="num">領先／落後</th><th class="num">退件</th></tr></thead>
         <tbody>
           ${active.map((r) => `<tr class="${mineRow(r) ? 'row-mine' : ''}">
             <td class="ov-name"><a href="#/p/${r.id}">${esc(r.name)}</a>
