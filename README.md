@@ -14,11 +14,12 @@
 
 ## 部署到 Cloudflare
 
-1. **建立 D1 資料庫**：Cloudflare 後台 → Storage & Databases → D1 → Create，名稱填 `product-listing-db`，建好後複製 Database ID。
-2. **填入 ID**：把 `wrangler.toml` 裡的 `database_id` 換成剛才複製的 ID。
-3. **建立 R2 儲存空間**：R2 → Create bucket，名稱填 `product-listing-photos`。第一次使用 R2 需要綁定付款方式，每月 10GB 以內免費。
-4. **連接 GitHub**：Workers & Pages → Create → Import a repository → 選這個 repo。Build command 留空，Deploy command 填 `npx wrangler deploy`。
-5. **第一次登入**：部署完成後，請**你本人先打開網頁，選「管理員」**，綁定到你的電腦。接著到「設定」把預設名字改成員工的真名，再勾選每個人的身分。
+D1 資料庫 `product-listing-db` 和 R2 儲存空間 `product-listing-photos` 已經建好，`wrangler.toml` 裡的 D1 ID 也已經填好，只剩下面兩步：
+
+1. **連接 GitHub**：Cloudflare 後台 → Workers & Pages → Create → Import a repository → 選這個 repo 的 `main` 分支。Build command 留空，Deploy command 填 `npx wrangler deploy`。
+2. **第一次登入**：部署完成後，請**你本人先打開網頁，選「管理員」**，綁定到你的電腦。接著到「設定」把預設名字改成員工的真名，再勾選每個人的身分。
+
+之後每次推送到 `main`，Cloudflare 都會自動重新部署。
 
 ## 本機開發
 

@@ -7,11 +7,11 @@ compatibility_date = "2025-09-01"
 directory = "./public"
 binding = "ASSETS"
 
-# 資料庫：部署前請把 database_id 換成你在 Cloudflare 建立的 D1 ID（見 README）
+# 資料庫：D1 product-listing-db（APAC）
 [[d1_databases]]
 binding = "DB"
 database_name = "product-listing-db"
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "a055ae4c-96d6-4a3a-8949-b16a280444c9"
 
 # 照片儲存
 [[r2_buckets]]
