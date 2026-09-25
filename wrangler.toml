@@ -1,0 +1,19 @@
+name = "product-listing-flow"
+main = "src/worker.js"
+compatibility_date = "2025-09-01"
+
+# 前端靜態檔
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
+# 資料庫：部署前請把 database_id 換成你在 Cloudflare 建立的 D1 ID（見 README）
+[[d1_databases]]
+binding = "DB"
+database_name = "product-listing-db"
+database_id = "00000000-0000-0000-0000-000000000000"
+
+# 照片儲存
+[[r2_buckets]]
+binding = "PHOTOS"
+bucket_name = "product-listing-photos"
