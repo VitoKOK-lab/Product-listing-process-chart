@@ -69,6 +69,8 @@ async function ensureSchema(db) {
   await db.batch(SCHEMA.map((sql) => db.prepare(sql)));
   const { n } = await db.prepare('SELECT COUNT(*) AS n FROM members').first();
   if (n === 0) await seedMembers(db);
+  // 外包設計師統一用名字登入，不再用專屬連結
+  await db.prepare('UPDATE members SET is_external = 0 WHERE is_external = 1').run();
   schemaReady = true;
 }
 
@@ -80,8 +82,8 @@ async function seedMembers(db) {
   for (const role of Object.keys(ROLES)) {
     for (let k = 1; k <= 3; k++) {
       const name = `${SEED_PREFIX[role]} ${k}`;
-      stmts.push(db.prepare('INSERT INTO members (name, color, is_external, created_at) VALUES (?, ?, ?, ?)')
-        .bind(name, COLORS[i++ % COLORS.length], role === 'external' ? 1 : 0, t));
+      stmts.push(db.prepare('INSERT INTO members (name, color, created_at) VALUES (?, ?, ?)')
+        .bind(name, COLORS[i++ % COLORS.length], t));
       stmts.push(db.prepare('INSERT INTO member_roles (member_id, role) SELECT id, ? FROM members WHERE name = ?').bind(role, name));
     }
   }
@@ -296,7 +298,7 @@ route('GET', '/api/bootstrap', async ({ db, me, settings }) => {
   let list = members.results.map((m) => ({ ...m, roles: rolesBy[m.id] || [] }));
   if (!me) {
     // 未登入只給登入頁需要的：未綁定、非外包、啟用中的名字
-    list = list.filter((m) => m.active && !m.bound && !m.is_external).map(({ id, name, color, roles }) => ({ id, name, color, roles }));
+    list = list.filter((m) => m.active && !m.bound).map(({ id, name, color, roles }) => ({ id, name, color, roles }));
     return json({ me: null, members: list });
   }
   const { rush_threshold_hours, day_hours, ...pub } = settings;
@@ -307,7 +309,7 @@ route('POST', '/api/claim', async ({ db, request, me }) => {
   if (me) throw new HttpError(400, `這台裝置已綁定「${me.name}」`);
   const id = intId((await body(request)).member_id);
   const token = newToken();
-  const res = await db.prepare('UPDATE members SET device_hash = ?, bound_at = ? WHERE id = ? AND active = 1 AND is_external = 0 AND device_hash IS NULL')
+  const res = await db.prepare('UPDATE members SET device_hash = ?, bound_at = ? WHERE id = ? AND active = 1 AND device_hash IS NULL')
     .bind(await sha256(token), now(), id).run();
   if (!res.meta.changes) throw new HttpError(409, '這個名字已被其他裝置綁定，請找管理員重設');
   await log(db, id, 'member_bind').run();
@@ -341,11 +343,10 @@ route('POST', '/api/members', async ({ db, request, me }) => {
   const name = text(b.name, '名字', 30);
   if (await db.prepare('SELECT id FROM members WHERE name = ?').bind(name).first()) throw new HttpError(409, '這個名字已經存在');
   const { n } = await db.prepare('SELECT COUNT(*) AS n FROM members').first();
-  const external = (b.roles || []).includes('external') ? 1 : 0;
-  const res = await db.prepare('INSERT INTO members (name, color, is_external, created_at) VALUES (?, ?, ?, ?)')
-    .bind(name, COLORS[n % COLORS.length], external, now()).run();
+  const res = await db.prepare('INSERT INTO members (name, color, created_at) VALUES (?, ?, ?)')
+    .bind(name, COLORS[n % COLORS.length], now()).run();
   const id = res.meta.last_row_id;
-  await db.batch([...(await setRoles(db, id, external ? ['external'] : b.roles)), log(db, me.id, 'member_add', null, name)]);
+  await db.batch([...(await setRoles(db, id, b.roles)), log(db, me.id, 'member_add', null, name)]);
   return json({ id });
 });
 
@@ -367,8 +368,6 @@ route('PATCH', '/api/members/:id', async ({ db, request, me, params }) => {
   }
   const stmts = [db.prepare('UPDATE members SET name = ?, is_admin = ?, active = ? WHERE id = ?').bind(name, isAdmin, active, id)];
   if (b.roles !== undefined) {
-    if (m.is_external && b.roles.some((r) => r !== 'external')) throw new HttpError(400, '外包設計師只能有外包身分');
-    if (!m.is_external && b.roles.includes('external')) throw new HttpError(400, '內部成員不能設為外包，請另建外包成員');
     stmts.push(...(await setRoles(db, id, b.roles)));
   }
   stmts.push(log(db, me.id, 'member_edit', null, name));

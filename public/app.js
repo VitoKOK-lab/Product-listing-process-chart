@@ -234,7 +234,7 @@ function renderLogin() {
     (groups[key] ||= []).push(m);
   }
   if (groups.none) { const none = groups.none; delete groups.none; Object.assign(groups, { none }); }
-  const ROLE_NAME = { picker: '選品', editor: '美編', lister: '上架人員', reviewer: '審查人', marketing: '老闆／行銷', none: '管理員' };
+  const ROLE_NAME = { picker: '選品', editor: '美編', lister: '上架人員', reviewer: '審查人', marketing: '老闆／行銷', external: '外包設計師', none: '管理員' };
   $app.innerHTML = `
     <div class="login">
       <h1>選擇你的名字</h1>
@@ -1192,33 +1192,30 @@ async function viewSettings() {
   if (!S.me.is_admin) { $app.innerHTML = '<p class="empty">只有管理員可以進入設定</p>'; return; }
   const trash = await api('GET', '/api/trash');
   const st = S.settings;
-  const internalRoles = Object.entries(S.roles).filter(([k]) => k !== 'external');
+  const internalRoles = Object.entries(S.roles);
   const SLA_LABEL = { raw: '原圖', listing: '上架', review: '首次審查', opt_general: '一般優化', opt_premium: '設計師優化', final_review: '最終審查' };
   $app.innerHTML = `
     <div class="page-head"><h1>設定</h1></div>
     <div class="set-grid">
       <div class="card section">
         <h2>成員</h2>
-        <p class="muted" style="margin-top:-6px">成員第一次選名字後綁定裝置。換裝置或選錯，按「重設綁定」。外包設計師用連結進入。</p>
+        <p class="muted" style="margin-top:-6px">成員第一次選名字後綁定裝置。換裝置或選錯，按「重設綁定」。</p>
         ${S.members.map((m) => `
           <div class="mrow" data-member="${m.id}">
             <div class="top">${avatar(m)}<input type="text" value="${esc(m.name)}" maxlength="30" data-name>
               ${m.is_admin ? '<span class="tag blue">管理員</span>' : ''}
-              ${!m.active ? '<span class="tag red">停用</span>' : m.is_external ? (m.bound ? '<span class="tag green">連結有效</span>' : '<span class="tag">無連結</span>') : m.bound ? `<span class="tag green" title="${fmtTime(m.bound_at)}">已綁定</span>` : '<span class="tag">未綁定</span>'}
+              ${!m.active ? '<span class="tag red">停用</span>' : m.bound ? `<span class="tag green" title="${fmtTime(m.bound_at)}">已綁定</span>` : '<span class="tag">未綁定</span>'}
             </div>
-            ${m.is_external ? '<div class="roles"><span class="tag">外包設計師</span></div>' : `<div class="roles">${internalRoles.map(([k, l]) => `<label class="${m.roles.includes(k) ? 'on' : ''}"><input type="checkbox" value="${k}" ${m.roles.includes(k) ? 'checked' : ''}>${l}</label>`).join('')}</div>`}
+            <div class="roles">${internalRoles.map(([k, l]) => `<label class="${m.roles.includes(k) ? 'on' : ''}"><input type="checkbox" value="${k}" ${m.roles.includes(k) ? 'checked' : ''}>${l}</label>`).join('')}</div>
             <div class="row">
               <button class="btn small" data-a="save">儲存</button>
-              ${m.is_external
-                ? `<button class="btn small" data-a="link">${m.bound ? '重新產生連結' : '產生連結'}</button>${m.bound ? '<button class="btn small danger" data-a="reset">讓連結失效</button>' : ''}`
-                : `${m.bound ? '<button class="btn small danger" data-a="reset">重設綁定</button>' : ''}<button class="btn small" data-a="admin">${m.is_admin ? '取消管理員' : '設為管理員'}</button>`}
+              ${m.bound ? '<button class="btn small danger" data-a="reset">重設綁定</button>' : ''}<button class="btn small" data-a="admin">${m.is_admin ? '取消管理員' : '設為管理員'}</button>
               <button class="btn small ${m.active ? 'danger' : ''}" data-a="active">${m.active ? '停用' : '啟用'}</button>
             </div>
             <div data-linkbox></div>
           </div>`).join('')}
         <form id="add-member" style="margin-top:14px">
           <div class="row"><input type="text" name="name" placeholder="新成員名字" maxlength="30" required style="flex:1;width:auto">
-            <select name="type" style="width:auto"><option value="internal">內部成員</option><option value="external">外包設計師</option></select>
             <button class="btn primary">新增</button></div>
         </form>
       </div>
@@ -1264,25 +1261,13 @@ async function viewSettings() {
       b.onclick = () => {
         const a = b.dataset.a;
         if (a === 'save') {
-          const roles = m.is_external ? ['external'] : [...row.querySelectorAll('.roles input:checked')].map((i) => i.value);
+          const roles = [...row.querySelectorAll('.roles input:checked')].map((i) => i.value);
           act(async () => { await api('PATCH', `/api/members/${id}`, { name: row.querySelector('[data-name]').value, roles }); row.querySelectorAll('[data-dirty]').forEach((el) => delete el.dataset.dirty); }, '已儲存');
         }
         if (a === 'admin') act(() => api('PATCH', `/api/members/${id}`, { is_admin: !m.is_admin }), '已更新');
         if (a === 'active') act(() => api('PATCH', `/api/members/${id}`, { active: !m.active }), '已更新');
-        if (a === 'reset' && confirm(m.is_external ? `讓「${m.name}」的連結失效？\n提醒：Shopline 帳號權限要另外去 Shopline 關閉。` : `重設「${m.name}」的裝置綁定？\n原裝置會立即登出，名字重新出現在登入頁。`)) {
-          act(() => api('POST', `/api/members/${id}/reset`), m.is_external ? '連結已失效' : '已重設');
-        }
-        if (a === 'link') {
-          if (m.bound && !confirm('重新產生會讓舊連結失效，確定？')) return;
-          act(async () => {
-            const { token } = await api('POST', `/api/members/${id}/link`);
-            const url = `${location.origin}/?x=${token}`;
-            await refresh();
-            const box = document.querySelector(`[data-member="${id}"] [data-linkbox]`);
-            if (box) box.innerHTML = `<div class="linkbox">${esc(url)}</div><button class="btn small" id="copy-link-${id}" style="margin-top:6px">複製連結</button><span class="muted">連結只顯示這一次</span>`;
-            const cp = document.getElementById(`copy-link-${id}`);
-            if (cp) cp.onclick = async () => { try { await navigator.clipboard.writeText(url); toast('已複製'); } catch { toast('請手動複製', true); } };
-          }, null, 'none');
+        if (a === 'reset' && confirm(`重設「${m.name}」的裝置綁定？\n原裝置會立即登出，名字重新出現在登入頁。`)) {
+          act(() => api('POST', `/api/members/${id}/reset`), '已重設');
         }
       };
     });
@@ -1290,7 +1275,7 @@ async function viewSettings() {
   document.getElementById('add-member').onsubmit = (e) => {
     e.preventDefault();
     const f = e.target;
-    act(() => api('POST', '/api/members', { name: f.name.value, roles: f.type.value === 'external' ? ['external'] : [] }), '已新增，記得勾選身分');
+    act(() => api('POST', '/api/members', { name: f.name.value, roles: [] }), '已新增，記得勾選身分');
   };
   document.getElementById('work-form').onsubmit = (e) => {
     e.preventDefault();
