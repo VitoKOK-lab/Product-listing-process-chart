@@ -843,3 +843,4 @@ table.done-table tbody tr td:last-child { border-radius: 0 18px 18px 0; }
 
 @media (prefers-reduced-motion: reduce) { body::before, body::after { animation: none; } }
 .pin::before { left: 16px; top: 2px; width: 12px; height: 4px; background: rgba(255, 255, 255, .45); }
+.admin-bar { display: flex; align-items: center; gap: 12px; padding: 12px 18px; margin: -4px 0 16px; background: linear-gradient(180deg, #fff, var(--lav-soft)); }

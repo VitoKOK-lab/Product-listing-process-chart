@@ -43,7 +43,7 @@ const SCHEMA = [
 ];
 
 export const ROLES = {
-  picker: '選品', editor: '美編', lister: '上架人員', reviewer: '審查人', marketing: '老闆／行銷', external: '外包設計師',
+  picker: '選品', editor: '美編', lister: '上架人員', reviewer: '審查人', marketing: '老闆／行銷', external: '設計師',
 };
 const SEED_PREFIX = { picker: '選品', editor: '美編', lister: '上架', reviewer: '審查', marketing: '行銷', external: '外包' };
 const COLORS = ['#1E4E8C', '#0E7C5A', '#6B3FA0', '#1B7F8C', '#B8741A', '#8C2F6B', '#4A6B1E', '#3D4F7A'];
@@ -80,8 +80,9 @@ async function seedMembers(db) {
   const stmts = [db.prepare('INSERT INTO members (name, color, is_admin, created_at) VALUES (?, ?, 1, ?)').bind('管理員', '#23283A', t)];
   let i = 0;
   for (const role of Object.keys(ROLES)) {
-    for (let k = 1; k <= 3; k++) {
-      const name = `${SEED_PREFIX[role]} ${k}`;
+    // 設計師先設一人，其他身分各 3 人
+    for (let k = 1; k <= (role === 'external' ? 1 : 3); k++) {
+      const name = role === 'external' ? '設計師' : `${SEED_PREFIX[role]} ${k}`;
       stmts.push(db.prepare('INSERT INTO members (name, color, created_at) VALUES (?, ?, ?)')
         .bind(name, COLORS[i++ % COLORS.length], t));
       stmts.push(db.prepare('INSERT INTO member_roles (member_id, role) SELECT id, ? FROM members WHERE name = ?').bind(role, name));
@@ -225,6 +226,7 @@ const ACTION_TEXT = {
   product_add: '新增商品', raw_done: '完成原圖', listing_done: '完成上架', listing_save: '儲存上架資料',
   review_pass: '首次審查通過', review_return: '退回', opt_assign: '指定優化',
   opt_submit: '更新線上', final_pass: '最終審查通過', final_return: '退回優化', reassign: '改派', comment_add: '留言',
+  admin_advance: '手動推進',
 };
 
 async function memberHasRole(db, memberId, role) {
@@ -600,6 +602,35 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params, sett
   let stmts;
 
   switch (b.action) {
+    // 管理員手動推到下一關：不檢查負責人與完成條件，留紀錄
+    case 'admin_advance': {
+      if (!me.is_admin) throw new HttpError(403, '只有管理員可以手動推進');
+      const note = String(b.note ?? '').trim().slice(0, 200);
+      const tail = note ? `：${note}` : '';
+      if (p.step === 'raw') {
+        stmts = transition(db, p, open, me, { endReason: 'admin', next: nextFor('listing', p, settings), action: 'admin_advance', detail: `原圖 → 上架${tail}` });
+      } else if (p.step === 'listing') {
+        stmts = transition(db, p, open, me, { endReason: 'admin', next: nextFor('review', p, settings), updates: { published_at: p.published_at ?? now() }, action: 'admin_advance', detail: `上架 → 首次審查${tail}` });
+      } else if (p.step === 'review') {
+        stmts = transition(db, p, open, me, { endReason: 'admin', next: { step: 'assign' }, action: 'admin_advance', detail: `首次審查 → 待指定優化${tail}` });
+      } else if (p.step === 'optimizing') {
+        const opt = await activeOptimization(db, id);
+        const rush = isRushNow(opt, now(), cfgOf(settings), settings);
+        stmts = transition(db, p, open, me, {
+          endReason: 'admin',
+          next: { ...nextFor('final_review', p, settings), budget: rush ? settings.rush_review_hours : settings.final_review_hours, start_reason: 'submit', optimization_id: opt.id },
+          action: 'admin_advance', detail: `優化 → 最終審查${tail}`,
+        });
+        stmts.push(db.prepare("UPDATE optimizations SET status = 'review' WHERE id = ?").bind(opt.id));
+      } else if (p.step === 'final_review') {
+        const opt = await activeOptimization(db, id);
+        stmts = transition(db, p, open, me, { endReason: 'admin', next: { step: 'done' }, updates: { opt_version: p.opt_version + 1 }, action: 'admin_advance', detail: `最終審查 → 已完成${tail}` });
+        stmts.push(db.prepare("UPDATE optimizations SET status = 'passed', passed_at = ? WHERE id = ?").bind(now(), opt.id));
+      } else {
+        throw new HttpError(400, p.step === 'assign' ? '待指定優化請用「指定優化」選擇優化者與截止時間' : '這件已完成');
+      }
+      break;
+    }
     case 'complete_raw': {
       mustHold('raw');
       const raws = await photosOf(['raw']);

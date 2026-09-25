@@ -234,7 +234,7 @@ function renderLogin() {
     (groups[key] ||= []).push(m);
   }
   if (groups.none) { const none = groups.none; delete groups.none; Object.assign(groups, { none }); }
-  const ROLE_NAME = { picker: '選品', editor: '美編', lister: '上架人員', reviewer: '審查人', marketing: '老闆／行銷', external: '外包設計師', none: '管理員' };
+  const ROLE_NAME = { picker: '選品', editor: '美編', lister: '上架人員', reviewer: '審查人', marketing: '老闆／行銷', external: '設計師', none: '管理員' };
   $app.innerHTML = `
     <div class="login">
       <h1>選擇你的名字</h1>
@@ -495,7 +495,7 @@ async function viewOverview() {
         <tbody>${done.map((r) => `<tr>
           <td class="ov-name"><a href="#/p/${r.id}">${esc(r.name)}</a></td>
           <td class="mono">${r.finished_at ? fmtTime(r.finished_at) : ''}</td>
-          <td>${r.opt ? (r.opt.kind === 'premium' ? '設計師（外包）' : '公司美編') : '—'}</td>
+          <td>${r.opt ? (r.opt.kind === 'premium' ? '設計師' : '公司美編') : '—'}</td>
           <td class="num"><span class="var ${varCls(r.variance)}">${esc(varTxt(r.variance))}</span></td>
           <td class="num mono ${r.returns ? 'over' : 'faint'}">${r.returns}</td>
           <td class="num">${isMkt() ? `<button class="btn small" data-reopt="${r.id}">再指定優化</button>` : ''}</td>
@@ -525,7 +525,7 @@ function openAssignModal(liveProducts, preselect = []) {
   const pre = new Set(preselect);
   openModal(`
     <h3>指定優化</h3>
-    <p class="muted">公司美編做一般優化、外包設計師做精製優化。截止前 ${esc(fmtWork(S.settings.rush_threshold_hours))}內自動變急件，排到優化者待辦最上面。</p>
+    <p class="muted">公司美編做一般優化、設計師做精製優化。截止前 ${esc(fmtWork(S.settings.rush_threshold_hours))}內自動變急件，排到優化者待辦最上面。</p>
     <div class="field"><span>商品（${liveProducts.length} 件可指定；可分次指定給不同的人）</span>
       <div class="row" style="margin-bottom:6px"><button type="button" class="btn small" data-all>全選</button><button type="button" class="btn small" data-none>全不選</button><span class="muted" id="pick-n"></span></div>
       <div class="pick-list">${liveProducts.map((p) => `<label><input type="checkbox" value="${p.id}" ${pre.has(p.id) ? 'checked' : ''}>${esc(p.name)}<span class="spacer"></span><span class="muted">${p.step === 'done' ? '已完成・再優化' : '待指定'}・${esc(batchName(p.batch_id))}</span></label>`).join('')}</div>
@@ -533,7 +533,7 @@ function openAssignModal(liveProducts, preselect = []) {
     <div class="field"><span>類型</span>
       <div class="hour-pick" id="kind-pick">
         <label><input type="radio" name="kind" value="general">一般優化（公司美編）</label>
-        <label><input type="radio" name="kind" value="premium">設計師優化（外包）</label>
+        <label><input type="radio" name="kind" value="premium">設計師優化</label>
       </div></div>
     <label class="field"><span>優化者</span><select name="optimizer" disabled><option value="">先選類型</option></select></label>
     <label class="field"><span>截止日期（最早明天）</span><input type="date" name="date" min="${tomorrowYmd()}"></label>
@@ -745,7 +745,7 @@ function actionPanel(p) {
       <div><div class="muted">截止</div><b>${esc(fmtDeadline(opt.deadline))}</b></div>
       <div><div class="muted">剩餘上班時間</div><span class="big">${opt.remaining_h > 0 ? esc(fmtWork(opt.remaining_h)) : '已逾期'}</span></div>
       ${opt.rush ? '<span class="tag rush">急件</span>' : ''}
-      <div><div class="muted">類型</div>${opt.kind === 'premium' ? '設計師優化（外包）' : '一般優化（公司美編）'}・第 ${opt.rounds} 輪</div>
+      <div><div class="muted">類型</div>${opt.kind === 'premium' ? '設計師優化' : '一般優化（公司美編）'}・第 ${opt.rounds} 輪</div>
     </div>` : '';
   const shop = p.sl_url ? `<a class="btn" href="${esc(p.sl_url)}" target="_blank" rel="noopener">開啟 Shopline 頁面</a>` : '';
 
@@ -753,7 +753,7 @@ function actionPanel(p) {
     const title = p.step === 'done' ? `已完成 ${p.opt_version ? `<span class="tag green">優化 v${p.opt_version}</span>` : ''}` : '首次審查通過・待指定優化';
     return `<div class="card action ${isMkt() ? 'mine' : 'locked'}">
       <h2>${title}</h2>
-      <div class="sub">${p.step === 'assign' ? '由行銷決定交給公司美編（一般優化）或外包設計師（設計師優化）' : ''}</div>
+      <div class="sub">${p.step === 'assign' ? '由行銷決定交給公司美編（一般優化）或設計師（設計師優化）' : ''}</div>
       <div class="row">${shop}${isMkt() ? `<button class="btn primary act" id="assign-one">${p.step === 'done' ? '再指定優化' : '指定優化'}</button>` : '<span class="muted">等待行銷指定</span>'}</div>
     </div>`;
   }
@@ -841,7 +841,7 @@ function ownersBlock(p) {
   return `<div class="card section"><h2>負責人 ${can ? '<span class="muted">改派會寫入紀錄</span>' : ''}</h2>
     ${row('選品', 'picker_id', 'picker')}${row('上架人員', 'lister_id', 'lister')}${row('審查人', 'reviewer_id', 'reviewer')}
     ${opt ? (can
-      ? `<label class="field"><span>優化者（${opt.kind === 'premium' ? '外包設計師' : '公司美編'}）</span><select data-owner="optimizer_id">${optionsFor(opt.kind === 'premium' ? 'external' : 'editor', opt.optimizer_id)}</select></label>`
+      ? `<label class="field"><span>優化者（${opt.kind === 'premium' ? '設計師' : '公司美編'}）</span><select data-owner="optimizer_id">${optionsFor(opt.kind === 'premium' ? 'external' : 'editor', opt.optimizer_id)}</select></label>`
       : `<div class="row"><span class="muted" style="width:70px">優化者</span>${who(opt.optimizer_id)}</div>`) : ''}
   </div>`;
 }
@@ -850,7 +850,7 @@ function timelineBlock(p) {
   const items = [...p.stints].reverse();
   return `<div class="card section"><h2>流程紀錄</h2><ul class="timeline">
     ${items.map((s) => {
-      const endTxt = { complete: '完成', pass: '通過', return: '退回', submit: '更新線上', reassign: '改派' }[s.end_reason] || '';
+      const endTxt = { complete: '完成', pass: '通過', return: '退回', submit: '更新線上', reassign: '改派', admin: '管理員推進' }[s.end_reason] || '';
       return `<li class="${s.start_reason === 'return' ? 'ret' : ''} ${s.ended_at == null ? 'open' : ''}">
         <b>${esc(stepLabel(s.step))}</b>・${esc(member(s.member_id)?.name ?? '—')}
         <span class="muted">${fmtTime(s.started_at)} → ${s.ended_at ? fmtTime(s.ended_at) + ' ' + endTxt : '進行中'}・經手 ${esc(fmtWork(s.held))}${s.over > 0 ? `・<span class="over">超出 ${Math.round(s.over * 10) / 10}h</span>` : ''}</span>
@@ -945,6 +945,8 @@ async function viewProduct(idStr) {
     </div>
     <div class="stepper">${STEP_ORDER.map((s, i) => `<div class="step ${i < idx ? 'done' : ''} ${i === idx ? 'cur' : ''}" style="${i === idx ? `background:${STEP_COLOR[s]}` : ''}">${i < idx ? '✓ ' : ''}${esc(stepLabel(s))}</div>`).join('')}</div>
     <div id="action">${actionPanel(p)}</div>
+    ${S.me.is_admin && !['assign', 'done'].includes(p.step) ? `<div class="card admin-bar"><span class="muted">管理員操作</span><span class="spacer"></span>
+      <button class="btn act" id="admin-advance">直接推到下一關：${esc(stepLabel(STEP_ORDER[STEP_ORDER.indexOf(p.step) + 1]))} →</button></div>` : ''}
     <div class="detail">
       <div>
         ${p.step !== 'raw' || p.open?.member_id !== S.me.id ? `<div class="card section"><h2>圖片</h2>
@@ -1102,6 +1104,22 @@ function bindProduct(p) {
   const ack = document.getElementById('ack-all');
   if (ack) ack.onclick = () => act(async () => { for (const m of p.my_mentions) await api('POST', `/api/mentions/${m.id}/ack`); });
 
+  const adv = document.getElementById('admin-advance');
+  if (adv) {
+    adv.onclick = () => openModal(`
+      <h3>直接推到下一關？</h3>
+      <p class="muted">不用等負責人、也不檢查完成條件。這個動作會記錄在流程紀錄，標示為管理員推進。</p>
+      <label class="field"><span>原因（選填）</span><textarea id="adv-note" placeholder="例：已口頭確認、負責人請假"></textarea></label>
+      <div class="acts"><button class="btn" data-close>取消</button><button class="btn primary" id="adv-go">確定推進</button></div>`,
+    (m, close) => {
+      m.querySelector('#adv-go').onclick = () => {
+        const note = m.querySelector('#adv-note').value.trim();
+        close();
+        doAction('admin_advance', { note });
+      };
+    });
+  }
+
   const del = document.getElementById('del-product');
   if (del) del.onclick = () => confirm(`刪除「${p.name}」？（可在設定 → 回收區還原）`) &&
     act(async () => { await api('DELETE', `/api/products/${id}`); location.hash = '#/radar'; }, '已刪除', 'none');
@@ -1169,7 +1187,7 @@ async function viewAnalysis() {
 const ACTIONS = {
   product_add: '新增商品', raw_done: '完成原圖', listing_done: '完成上架', listing_save: '儲存上架草稿',
   review_pass: '首次審查通過', review_return: '退回', opt_assign: '指定優化',
-  opt_submit: '更新線上', final_pass: '最終審查通過', final_return: '退回優化', reassign: '改派', comment_add: '留言',
+  opt_submit: '更新線上', final_pass: '最終審查通過', final_return: '退回優化', reassign: '改派', comment_add: '留言', admin_advance: '管理員手動推進',
   comment_delete: '刪除留言', photo_add: '上傳照片', photo_delete: '刪除照片', mention_ack: '已讀提及',
   member_add: '新增成員', member_edit: '修改成員', member_reset: '重設綁定', link_create: '產生外包連結', link_revoke: '讓外包連結失效',
   settings_edit: '修改設定', batch_edit: '修改批次', product_delete: '刪除商品', product_restore: '還原商品', photo_restore: '還原照片', comment_restore: '還原留言',
