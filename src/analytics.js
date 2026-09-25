@@ -1,20 +1,34 @@
-// 責任歸屬、雷達、延誤分析（純函式，所有數字由程式計算）
+// 責任歸屬、全覽、雷達、延誤分析（純函式，所有數字由程式計算）
 import { workHoursBetween, addWorkHours } from './worktime.js';
 
-export const STEPS = ['raw', 'edit', 'listing', 'review', 'publish', 'live', 'optimizing', 'opt_review'];
+// 流程：原圖 → 上架（用原圖＋文案直接上 Shopline）→ 首次審查 → 待指定優化 → 優化 → 最終審查 → 已完成
+export const STEPS = ['raw', 'listing', 'review', 'assign', 'optimizing', 'final_review', 'done'];
+export const FLOW_COLS = ['raw', 'listing', 'review', 'assign', 'optimizing', 'final_review'];
 export const STEP_LABEL = {
-  raw: '原圖', edit: '美編', listing: '建檔', review: '審核', publish: '待發布',
-  live: '已上架', optimizing: '優化中', opt_review: '優化審核',
+  raw: '原圖', listing: '上架', review: '首次審查', assign: '待指定優化',
+  optimizing: '優化', final_review: '最終審查', done: '已完成',
 };
+export const REASON_LABEL = { photo: '照片', copy: '文案', price: '價格' };
 
 const round1 = (n) => Math.round(n * 10) / 10;
 
-// 同一段「停留」= 同商品、同步驟、同優化單，連續且只因改派而換人的 stints
+// 同一段「停留」：一般步驟 = 連續且只因改派換人的 stints；優化 = 同一張優化單的所有輪次
 function visitsOf(stints) {
   const sorted = [...stints].sort((a, b) => a.product_id - b.product_id || a.started_at - b.started_at || a.id - b.id);
   const visits = [];
+  const optVisits = new Map();
   let cur = null;
   for (const s of sorted) {
+    if (s.step === 'optimizing' && s.optimization_id) {
+      let v = optVisits.get(s.optimization_id);
+      if (!v) {
+        v = { product_id: s.product_id, step: s.step, optimization_id: s.optimization_id, budget: s.budget_hours, stints: [] };
+        optVisits.set(s.optimization_id, v);
+        visits.push(v);
+      }
+      v.stints.push(s);
+      continue;
+    }
     const cont = cur && s.start_reason === 'reassign' && cur.product_id === s.product_id
       && cur.step === s.step && cur.optimization_id === s.optimization_id;
     if (cont) cur.stints.push(s);
@@ -26,44 +40,31 @@ function visitsOf(stints) {
   return visits;
 }
 
-// 每個 stint 的經手時數與超出預算時數
-// 一般步驟：同一段停留內累計，超過預算的部分算給當時拿著的人
-// 優化中：只看截止時間；審核超時的時數會延後優化者的有效截止時間
+// 每個 stint 的經手時數與超出標準時數：只算這個人「接到工作之後」拿在手上的上班時間
+// 超過標準的部分算給當時拿著的人；別人拖延的時間不會算到下一個人身上
 export function computeStintHours(stints, optimizations, now, cfg) {
   const out = new Map();
-  const optById = new Map(optimizations.map((o) => [o.id, o]));
   const held = (s) => workHoursBetween(s.started_at, s.ended_at ?? now, cfg);
-
-  for (const v of visitsOf(stints.filter((s) => s.step !== 'optimizing'))) {
+  for (const v of visitsOf(stints)) {
     let acc = 0;
     for (const s of v.stints) {
       const h = held(s);
       let over = 0;
       if (v.budget != null) {
-        const before = Math.max(0, acc - v.budget);
-        const after = Math.max(0, acc + h - v.budget);
-        over = after - before;
+        over = Math.max(0, acc + h - v.budget) - Math.max(0, acc - v.budget);
       }
       acc += h;
       out.set(s.id, { held: h, over, visit_held: acc });
     }
   }
-
-  const optStints = stints.filter((s) => s.step === 'optimizing');
-  for (const s of optStints) {
-    const opt = optById.get(s.optimization_id);
-    const h = held(s);
-    if (!opt) { out.set(s.id, { held: h, over: 0 }); continue; }
-    // 此段開始前、已結束的審核輪次超時總和
-    const reviewerOver = stints
-      .filter((r) => r.step === 'opt_review' && r.optimization_id === opt.id && r.ended_at != null && r.ended_at <= s.started_at)
-      .reduce((sum, r) => sum + (out.get(r.id)?.over || 0), 0);
-    const eff = addWorkHours(opt.deadline, reviewerOver, cfg);
-    const end = s.ended_at ?? now;
-    const over = end > eff ? workHoursBetween(Math.max(s.started_at, eff), end, cfg) : 0;
-    out.set(s.id, { held: h, over, visit_held: h });
-  }
   return out;
+}
+
+// 優化者的標準時間 = 指定到截止的上班時間 − 最終審查的標準時間（急件用急件審查時數）
+export function optimizerBudget(assignedAt, deadline, cfg, settings) {
+  const windowH = workHoursBetween(assignedAt, deadline, cfg);
+  const reviewH = windowH <= settings.rush_threshold_hours ? settings.rush_review_hours : settings.final_review_hours;
+  return Math.max(0.5, round1(windowH - reviewH));
 }
 
 export function optRemaining(opt, now, cfg) {
@@ -71,22 +72,21 @@ export function optRemaining(opt, now, cfg) {
 }
 
 export function isRushNow(opt, now, cfg, settings) {
-  return opt && opt.status !== 'passed' && optRemaining(opt, now, cfg) <= settings.rush_threshold_hours;
+  return !!opt && opt.status !== 'passed' && optRemaining(opt, now, cfg) <= settings.rush_threshold_hours;
 }
 
-// 這張優化單是否曾經是急件（結案時或現在距截止 ≤ 門檻）
 export function wasRush(opt, now, cfg, settings) {
   const end = opt.passed_at ?? now;
   return (end >= opt.deadline ? 0 : workHoursBetween(end, opt.deadline, cfg)) <= settings.rush_threshold_hours;
 }
 
-// 目前停留的顏色：rush / red / yellow / ok（一般步驟依整段停留累計 vs 預算）
+// 目前停留的顏色：rush / red / yellow / ok
 export function stintColor(s, hours, opt, now, cfg, settings) {
-  if (s.step === 'optimizing' || s.step === 'opt_review') {
-    if (opt && now > opt.deadline) return 'red';
+  if (opt && (s.step === 'optimizing' || s.step === 'final_review')) {
+    if (now > opt.deadline) return 'red';
     if (isRushNow(opt, now, cfg, settings)) return 'rush';
   }
-  if (s.budget_hours == null) return 'ok';
+  if (s.budget_hours == null || !hours) return 'ok';
   const total = hours.visit_held ?? hours.held;
   if (total > 2 * s.budget_hours) return 'red';
   if (total > s.budget_hours) return 'yellow';
@@ -98,15 +98,114 @@ function parseReasons(r) {
   try { return Array.isArray(r) ? r : JSON.parse(r); } catch { return []; }
 }
 
-const REASON_LABEL = { photo: '照片', copy: '文案', price: '價格' };
+// 被退件歸屬：依退回原因算到「做那部分的人」，不是依流程退到哪一關
+// 照片 → 原圖的人；文案／價格 → 上架的人；最終審查退回 → 優化者
+export function returnEvents(stints) {
+  const sorted = [...stints].sort((a, b) => a.started_at - b.started_at || a.id - b.id);
+  const events = [];
+  for (const s of sorted) {
+    if (s.start_reason !== 'return') continue;
+    const reasons = parseReasons(s.reasons);
+    const lastHolder = (step, extra = () => true) => {
+      const prev = sorted.filter((x) => x.product_id === s.product_id && x.step === step && x.started_at < s.started_at && extra(x));
+      return prev.length ? prev[prev.length - 1].member_id : null;
+    };
+    const blamed = new Map();
+    if (s.step === 'optimizing') {
+      const m = lastHolder('optimizing', (x) => x.optimization_id === s.optimization_id);
+      if (m) blamed.set(m, reasons);
+    } else {
+      for (const r of reasons) {
+        const m = lastHolder(r === 'photo' ? 'raw' : 'listing');
+        if (m) blamed.set(m, [...(blamed.get(m) || []), r]);
+      }
+    }
+    for (const [member_id, rs] of blamed) {
+      events.push({
+        member_id, reasons: rs, product_id: s.product_id, at: s.started_at, by_id: s.by_id,
+        stage: s.step === 'optimizing' ? 'final' : 'first',
+      });
+    }
+  }
+  return events;
+}
+
+// 首頁全覽：每件商品一列，每一步一格
+export function overviewRows({ products, stints, optimizations, hoursMap, now, cfg, settings }) {
+  const byProduct = new Map();
+  for (const s of stints) (byProduct.get(s.product_id) || byProduct.set(s.product_id, []).get(s.product_id)).push(s);
+  const optsBy = new Map();
+  for (const o of optimizations) (optsBy.get(o.product_id) || optsBy.set(o.product_id, []).get(o.product_id)).push(o);
+  const returnsBy = new Map();
+  for (const e of returnEvents(stints)) returnsBy.set(e.product_id, (returnsBy.get(e.product_id) || 0) + 1);
+
+  return products.map((p) => {
+    const ss = (byProduct.get(p.id) || []).sort((a, b) => a.started_at - b.started_at || a.id - b.id);
+    const opts = (optsBy.get(p.id) || []).sort((a, b) => a.id - b.id);
+    const activeOpt = opts.find((o) => o.status !== 'passed') || null;
+    const lastOpt = opts[opts.length - 1] || null;
+    const curIdx = STEPS.indexOf(p.step);
+    let variance = 0;
+    const cells = FLOW_COLS.map((step, i) => {
+      const cell = { step, state: i < curIdx ? 'done' : i === curIdx ? 'current' : 'future', held: 0, budget: null, variance: null, holders: [], color: 'ok' };
+      if (step === 'assign') {
+        // 待指定優化：只記等待時間，不算任何人的延誤
+        const passEnd = [...ss].reverse().find((s) => s.step === 'review' && s.end_reason === 'pass')?.ended_at;
+        if (passEnd) {
+          const until = p.step === 'assign' ? now : (opts.find((o) => o.assigned_at >= passEnd)?.assigned_at ?? passEnd);
+          cell.held = round1(workHoursBetween(passEnd, until, cfg));
+        }
+        cell.owner = null;
+        return cell;
+      }
+      const mine = ss.filter((s) => s.step === step && (step !== 'optimizing' && step !== 'final_review' ? true : !lastOpt || s.optimization_id === lastOpt.id));
+      let held = 0, over = 0;
+      for (const s of mine) {
+        const h = hoursMap.get(s.id);
+        held += h?.held || 0;
+        over += h?.over || 0;
+        if (s.member_id && !cell.holders.includes(s.member_id)) cell.holders.push(s.member_id);
+      }
+      const budgets = visitsOf(mine).map((v) => v.budget).filter((b) => b != null);
+      cell.budget = budgets.length ? round1(budgets.reduce((a, b) => a + b, 0)) : null;
+      cell.held = round1(held);
+      cell.over = round1(over);
+      cell.rounds = visitsOf(mine).length;
+      if (cell.state === 'future' && mine.length) cell.state = 'done';
+      if (cell.budget != null && mine.length) {
+        cell.variance = cell.state === 'current' ? round1(Math.min(0, cell.budget - held)) : round1(cell.budget - held);
+        variance += cell.variance;
+      }
+      const open = mine.find((s) => s.ended_at == null);
+      if (open) {
+        cell.color = stintColor(open, hoursMap.get(open.id), activeOpt, now, cfg, settings);
+        cell.holder_id = open.member_id;
+      }
+      cell.owner = {
+        raw: p.picker_id, listing: p.lister_id, review: p.reviewer_id, final_review: p.reviewer_id,
+        optimizing: (activeOpt || lastOpt)?.optimizer_id ?? null,
+      }[step] ?? null;
+      return cell;
+    });
+    return {
+      id: p.id, name: p.name, batch_id: p.batch_id, step: p.step, done: p.step === 'done',
+      cells, variance: round1(variance), returns: returnsBy.get(p.id) || 0,
+      opt: activeOpt || lastOpt ? {
+        kind: (activeOpt || lastOpt).kind, deadline: (activeOpt || lastOpt).deadline,
+        rush: isRushNow(activeOpt, now, cfg, settings), remaining_h: activeOpt ? round1(optRemaining(activeOpt, now, cfg)) : null,
+      } : null,
+      finished_at: p.step === 'done' ? p.updated_at : null,
+    };
+  });
+}
 
 const WAIT_TAG = {
-  raw: '待上傳原圖', edit: '待做圖', listing: '圖已到，可建檔', review: '等我審核', publish: '等我發布',
-  optimizing: '優化中', opt_review: '等我審核優化',
+  raw: '待上傳原圖', listing: '可上架', review: '等我首次審查', assign: '待指定優化',
+  optimizing: '優化中', final_review: '等我最終審查',
 };
 
-// 雷達：依規格固定排序 急件 → @我／被退回 → 紅 → 黃 → 等我處理
-export function buildRadar({ stints, optimizations, mentions, products, me, scope, now, cfg, settings, hoursMap }) {
+// 我的待辦：急件 → @我／被退回 → 紅 → 黃 → 等我處理
+export function buildRadar({ stints, optimizations, mentions, products, me, meRoles = [], scope, now, cfg, settings, hoursMap }) {
   const optById = new Map(optimizations.map((o) => [o.id, o]));
   const prodById = new Map(products.map((p) => [p.id, p]));
   const open = stints.filter((s) => s.ended_at == null && prodById.has(s.product_id));
@@ -121,10 +220,11 @@ export function buildRadar({ stints, optimizations, mentions, products, me, scop
     const tags = [];
     let group = 'mine';
     let returned = null;
-    if (color === 'rush' || (opt && (s.step === 'optimizing' || s.step === 'opt_review') && color === 'red')) {
+    if (opt && (color === 'rush' || color === 'red')) {
       group = 'rush';
-      const rem = optRemaining(opt, now, cfg);
-      tags.push(now > opt.deadline ? { t: `逾期 ${round1(workHoursBetween(opt.deadline, now, cfg))}h`, k: 'red' } : { t: `急件 剩 ${round1(rem)}h`, k: 'rush' });
+      tags.push(now > opt.deadline
+        ? { t: `逾期 ${round1(workHoursBetween(opt.deadline, now, cfg))}h`, k: 'red' }
+        : { t: `急件 剩 ${round1(optRemaining(opt, now, cfg))}h`, k: 'rush' });
     }
     if (s.start_reason === 'return') {
       returned = { reasons: parseReasons(s.reasons).map((r) => REASON_LABEL[r] || r), note: s.note, by: s.by_id };
@@ -135,31 +235,42 @@ export function buildRadar({ stints, optimizations, mentions, products, me, scop
     if (color === 'yellow' && group === 'mine') group = 'yellow';
     if (h.over > 0) tags.push({ t: `超時 ${round1(h.over)}h`, k: color === 'red' ? 'red' : 'yellow' });
     tags.push({ t: WAIT_TAG[s.step] || '', k: 'wait' });
-    items.set(s.product_id + ':' + s.id, {
-      key: s.product_id + ':' + s.id, product_id: p.id, name: p.name, batch_id: p.batch_id, step: s.step,
-      holder_id: s.member_id, started_at: s.started_at, held_h: round1(h.held), over_h: round1(h.over),
+    items.set(`${s.product_id}:${s.id}`, {
+      key: `${s.product_id}:${s.id}`, product_id: p.id, name: p.name, batch_id: p.batch_id, step: s.step,
+      holder_id: s.member_id, started_at: s.started_at, held_h: round1(h.visit_held ?? h.held), over_h: round1(h.over),
       budget_h: s.budget_hours, color, group, tags, returned,
       deadline: opt?.deadline ?? null, remaining_h: opt ? round1(optRemaining(opt, now, cfg)) : null,
       budget_left_h: s.budget_hours != null ? round1(s.budget_hours - (h.visit_held ?? h.held)) : null,
     });
   }
 
+  // 行銷：待指定優化的商品
+  if (scope === 'me' && meRoles.includes('marketing')) {
+    for (const p of products) {
+      if (p.step !== 'assign') continue;
+      items.set(`a${p.id}`, {
+        key: `a${p.id}`, product_id: p.id, name: p.name, batch_id: p.batch_id, step: 'assign', holder_id: null,
+        started_at: p.updated_at, held_h: 0, over_h: 0, budget_h: null, color: 'ok', group: 'mine',
+        tags: [{ t: '待指定優化', k: 'wait' }], returned: null, deadline: null, remaining_h: null, budget_left_h: null,
+      });
+    }
+  }
+
   if (scope === 'me') {
     for (const m of mentions) {
       if (m.member_id !== me || m.resolved_at != null || !prodById.has(m.product_id)) continue;
       const existing = [...items.values()].find((it) => it.product_id === m.product_id);
-      const tag = { t: '@ 提及你', k: 'mention', mention_id: m.id };
+      const tag = { t: '@ 提及你', k: 'mention' };
       if (existing) {
         existing.tags.unshift(tag);
         if (existing.group !== 'rush') existing.group = 'attention';
         existing.mention_id = m.id;
       } else {
         const p = prodById.get(m.product_id);
-        items.set('m' + m.id, {
-          key: 'm' + m.id, product_id: p.id, name: p.name, batch_id: p.batch_id, step: p.step,
+        items.set(`m${m.id}`, {
+          key: `m${m.id}`, product_id: p.id, name: p.name, batch_id: p.batch_id, step: p.step,
           holder_id: null, started_at: m.created_at, held_h: 0, over_h: 0, budget_h: null, color: 'ok',
-          group: 'attention', tags: [tag], returned: null, deadline: null, remaining_h: null, mention_id: m.id,
-          budget_left_h: null,
+          group: 'attention', tags: [tag], returned: null, deadline: null, remaining_h: null, mention_id: m.id, budget_left_h: null,
         });
       }
     }
@@ -191,11 +302,10 @@ export function diagnose(s, stints, roleMembers, ratio) {
   return { load, avg: round1(avg), kind: capacity ? 'capacity' : 'speed' };
 }
 
-// 單件商品的時間歸屬條
 export function attributionFor(productId, stints, hoursMap) {
   const agg = new Map();
   for (const s of stints) {
-    if (s.product_id !== productId) continue;
+    if (s.product_id !== productId || !s.member_id) continue;
     const h = hoursMap.get(s.id);
     if (!h) continue;
     const a = agg.get(s.member_id) || { member_id: s.member_id, roles: new Set(), held: 0, over: 0 };
@@ -209,7 +319,6 @@ export function attributionFor(productId, stints, hoursMap) {
     .sort((a, b) => b.over - a.over || b.held - a.held);
 }
 
-// 優化單錯過截止時間時，延誤拆解到每位超時的人
 export function deadlineBreakdown(opt, stints, hoursMap, now) {
   const end = opt.passed_at ?? now;
   if (end <= opt.deadline) return null;
@@ -219,19 +328,27 @@ export function deadlineBreakdown(opt, stints, hoursMap, now) {
   return { late: true, rows };
 }
 
-// 延誤排行（依超出預算時數排序）
+// 個人排行：超出標準時數、被退件次數、審查效率
 export function ranking({ stints, optimizations, hoursMap, roleMembers, settings, now, cfg, filter }) {
   const optById = new Map(optimizations.map((o) => [o.id, o]));
   const rows = new Map();
-  for (const s of stints) {
-    if (!filter(s)) continue;
+  const row = (id) => {
+    if (!rows.has(id)) rows.set(id, { member_id: id, roles: new Set(), held: 0, over: 0, late_count: 0, speed: 0, capacity: 0, returned: 0, returned_reasons: { photo: 0, copy: 0, price: 0 }, issued: 0, review_rounds: 0, review_held: 0 });
+    return rows.get(id);
+  };
+  const scoped = (s) => {
+    if (!filter(s)) return false;
     const opt = s.optimization_id ? optById.get(s.optimization_id) : null;
     const rush = opt ? wasRush(opt, now, cfg, settings) : false;
-    if (filter.scope === 'rush' && !rush) continue;
-    if (filter.scope === 'normal' && rush) continue;
+    if (filter.scope === 'rush' && !rush) return false;
+    if (filter.scope === 'normal' && rush) return false;
+    return true;
+  };
+  for (const s of stints) {
+    if (!s.member_id || !scoped(s)) continue;
     const h = hoursMap.get(s.id);
     if (!h) continue;
-    const r = rows.get(s.member_id) || { member_id: s.member_id, roles: new Set(), held: 0, over: 0, late_count: 0, speed: 0, capacity: 0 };
+    const r = row(s.member_id);
     r.roles.add(s.role);
     r.held += h.held;
     r.over += h.over;
@@ -239,21 +356,34 @@ export function ranking({ stints, optimizations, hoursMap, roleMembers, settings
       r.late_count++;
       r[diagnose(s, stints, roleMembers, settings.capacity_ratio).kind]++;
     }
-    rows.set(s.member_id, r);
+    if ((s.step === 'review' || s.step === 'final_review') && s.ended_at != null) {
+      r.review_rounds++;
+      r.review_held += h.held;
+    }
+  }
+  const stintById = new Map(stints.map((s) => [s.product_id + ':' + s.started_at, s]));
+  for (const e of returnEvents(stints)) {
+    const src = stintById.get(e.product_id + ':' + e.at);
+    if (src && !scoped(src)) continue;
+    const r = row(e.member_id);
+    r.returned++;
+    for (const k of e.reasons) if (k in r.returned_reasons) r.returned_reasons[k]++;
+    if (e.by_id) row(e.by_id).issued++;
   }
   return [...rows.values()]
-    .map((r) => ({ ...r, roles: [...r.roles], held: round1(r.held), over: round1(r.over) }))
-    .sort((a, b) => b.over - a.over || b.held - a.held);
+    .map((r) => ({
+      ...r, roles: [...r.roles], held: round1(r.held), over: round1(r.over),
+      review_avg: r.review_rounds ? round1(r.review_held / r.review_rounds) : null,
+    }))
+    .sort((a, b) => b.over - a.over || b.returned - a.returned || b.held - a.held);
 }
 
-// 規格第 0 節的指標
-export function metrics({ stints, optimizations, comments, undoCount, hoursMap, now, cfg, filter }) {
+export function metrics({ stints, optimizations, comments, hoursMap, now, cfg, filter }) {
   const commentsBy = new Map();
   for (const c of comments) (commentsBy.get(c.product_id) || commentsBy.set(c.product_id, []).get(c.product_id)).push(c);
 
   let dwellSum = 0, dwellN = 0, yellowEnded = 0, falseAlarm = 0;
-  const visits = visitsOf(stints.filter((s) => s.step !== 'optimizing' && filter(s)));
-  for (const v of visits) {
+  for (const v of visitsOf(stints.filter((s) => filter(s)))) {
     if (v.budget == null) continue;
     const first = v.stints[0];
     const last = v.stints[v.stints.length - 1];
@@ -265,10 +395,9 @@ export function metrics({ stints, optimizations, comments, undoCount, hoursMap, 
     const firstAction = Math.min(end, ...cs.map((c) => c.created_at));
     dwellSum += workHoursBetween(yellowAt, firstAction, cfg);
     dwellN++;
-    if (last.ended_at != null && ['complete', 'pass', 'publish', 'submit'].includes(last.end_reason)) {
+    if (last.ended_at != null && ['complete', 'pass', 'submit'].includes(last.end_reason)) {
       yellowEnded++;
-      const nudged = cs.some((c) => c.member_id !== last.member_id);
-      if (!nudged) falseAlarm++;
+      if (!cs.some((c) => c.member_id !== last.member_id)) falseAlarm++;
     }
   }
 
@@ -283,9 +412,9 @@ export function metrics({ stints, optimizations, comments, undoCount, hoursMap, 
     return all.length ? { rate: Math.round((all.filter((r) => r === 'pass').length / all.length) * 100), n: all.length } : { rate: null, n: 0 };
   };
 
-  const editVisits = visitsOf(stints.filter((s) => s.step === 'edit' && s.ended_at != null && filter(s)));
-  const editAvg = editVisits.length
-    ? editVisits.reduce((sum, v) => sum + v.stints.reduce((x, s) => x + (hoursMap.get(s.id)?.held || 0), 0), 0) / editVisits.length
+  const reviewVisits = visitsOf(stints.filter((s) => s.step === 'review' && s.ended_at != null && filter(s)));
+  const reviewAvg = reviewVisits.length
+    ? reviewVisits.reduce((sum, v) => sum + v.stints.reduce((x, s) => x + (hoursMap.get(s.id)?.held || 0), 0), 0) / reviewVisits.length
     : null;
 
   const missed = optimizations.filter((o) => (o.passed_at ?? now) > o.deadline && (o.passed_at != null || now > o.deadline)).length;
@@ -296,9 +425,9 @@ export function metrics({ stints, optimizations, comments, undoCount, hoursMap, 
     false_alarm_rate: yellowEnded ? Math.round((falseAlarm / yellowEnded) * 100) : null,
     false_alarm_n: yellowEnded,
     review_first_pass: firstPass('review', (s) => s.product_id),
-    opt_first_pass: firstPass('opt_review', (s) => s.optimization_id),
-    edit_avg_h: editAvg == null ? null : round1(editAvg),
-    undo_count: undoCount,
+    final_first_pass: firstPass('final_review', (s) => s.optimization_id),
+    review_avg_h: reviewAvg == null ? null : round1(reviewAvg),
+    returns_total: returnEvents(stints.filter(filter)).length,
     missed_deadlines: missed,
   };
 }

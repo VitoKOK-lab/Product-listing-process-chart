@@ -4,13 +4,14 @@
 
 const POLL_MS = 10000;
 const MAX_EDGE = 1920;
-const STEP_ORDER = ['raw', 'edit', 'listing', 'review', 'publish', 'live', 'optimizing', 'opt_review'];
+const STEP_ORDER = ['raw', 'listing', 'review', 'assign', 'optimizing', 'final_review', 'done'];
+const FLOW_COLS = ['raw', 'listing', 'review', 'assign', 'optimizing', 'final_review'];
 const STEP_COLOR = {
-  raw: '#3D4F7A', edit: '#6B3FA0', listing: '#1B7F8C', review: '#1E4E8C', publish: '#B8741A',
-  live: '#0E7C5A', optimizing: '#8C2F6B', opt_review: '#1E4E8C',
+  raw: '#3D4F7A', listing: '#1B7F8C', review: '#1E4E8C', assign: '#B8741A',
+  optimizing: '#6B3FA0', final_review: '#1E4E8C', done: '#0E7C5A',
 };
 const REASON = { photo: '照片', copy: '文案', price: '價格' };
-const KIND = { raw: '原圖', cutout: '去背圖', mood: '意象圖', opt: '優化截圖' };
+const KIND = { raw: '原圖', opt: '優化截圖' };
 const GROUPS = [
   ['rush', '急件', 'var(--ruby)'],
   ['attention', '@我・被退回', 'var(--amethyst)'],
@@ -22,7 +23,7 @@ const GROUPS = [
 const S = {
   me: null, members: [], batches: [], settings: null, roles: {}, stepLabel: {},
   version: null, busy: 0, radarScope: 'me', radarKeys: [], radarScroll: 0, handled: null,
-  lastLoad: null, offline: false, fails: 0, kanbanQuery: '', ana: { scope: 'all', days: 30, batch: 0 },
+  lastLoad: null, offline: false, fails: 0, ovBatch: null, ovSort: 'progress', ana: { scope: 'all', days: 30, batch: 0 },
 };
 const $app = document.getElementById('app');
 
@@ -184,14 +185,14 @@ async function boot() {
   renderNav();
   document.getElementById('me').innerHTML = `${avatar(S.me)}<span>${esc(S.me.name)}</span><span class="roles">${esc(rolesText(S.me) || (S.me.is_admin ? '管理員' : ''))}</span>`;
   S.version = (await api('GET', '/api/version')).v;
-  if (!location.hash) location.hash = '#/radar';
+  if (!location.hash) location.hash = S.me.is_external ? '#/radar' : '#/overview';
   await render();
 }
 
 function renderNav() {
   const items = S.me.is_external
     ? [['radar', '我的優化']]
-    : [['radar', '雷達'], ['kanban', 'Kanban'], ['batches', '整批進度'], ['analysis', '延誤分析'], ['log', '紀錄'], ...(S.me.is_admin ? [['settings', '設定']] : [])];
+    : [['overview', '全覽'], ['radar', '我的待辦'], ['analysis', '延誤分析'], ['log', '紀錄'], ...(S.me.is_admin ? [['settings', '設定']] : [])];
   document.getElementById('nav').innerHTML = items.map(([r, l]) => `<a href="#/${r}" data-route="${r}">${l}</a>`).join('');
 }
 
@@ -210,7 +211,7 @@ setInterval(async () => {
     if (isBusy()) return;
     const route = currentRoute()[0];
     // 版本變了就重載；雷達與看板每分鐘也重算一次顏色
-    if (v.v !== S.version || (['radar', 'kanban'].includes(route) && Date.now() - S.lastLoad > 60000)) await refresh();
+    if (v.v !== S.version || (['radar', 'overview'].includes(route) && Date.now() - S.lastLoad > 60000)) await refresh();
   } catch { /* 離線橫幅已處理 */ }
 }, POLL_MS);
 
@@ -233,7 +234,7 @@ function renderLogin() {
     (groups[key] ||= []).push(m);
   }
   if (groups.none) { const none = groups.none; delete groups.none; Object.assign(groups, { none }); }
-  const ROLE_NAME = { picker: '選品', editor: '美編', lister: '上架人員', reviewer: '審核人', marketing: '老闆／行銷', none: '管理員' };
+  const ROLE_NAME = { picker: '選品', editor: '美編', lister: '上架人員', reviewer: '審查人', marketing: '老闆／行銷', none: '管理員' };
   $app.innerHTML = `
     <div class="login">
       <h1>選擇你的名字</h1>
@@ -254,15 +255,15 @@ function renderLogin() {
 
 // ---------- router ----------
 
-const currentRoute = () => (location.hash.replace(/^#\/?/, '') || 'radar').split('/');
+const currentRoute = () => (location.hash.replace(/^#\/?/, '') || (S.me?.is_external ? 'radar' : 'overview')).split('/');
 window.addEventListener('hashchange', () => { if (S.me) render(); });
 
 async function render() {
   const [route, arg] = currentRoute();
   if (route !== 'radar' && document.querySelector('[data-view=radar]')) S.radarScroll = window.scrollY;
-  document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.route === route || (route === 'p' && a.dataset.route === 'radar') || (route === 'new' && a.dataset.route === 'radar')));
-  const views = { radar: viewRadar, kanban: viewKanban, batches: viewBatches, analysis: viewAnalysis, log: viewLog, settings: viewSettings, p: viewProduct, new: viewNew };
-  const view = S.me.is_external && !['radar', 'p'].includes(route) ? viewRadar : (views[route] || viewRadar);
+  document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.route === route || (['p', 'new'].includes(route) && a.dataset.route === (S.me.is_external ? 'radar' : 'overview'))));
+  const views = { overview: viewOverview, radar: viewRadar, analysis: viewAnalysis, log: viewLog, settings: viewSettings, p: viewProduct, new: viewNew };
+  const view = S.me.is_external && !['radar', 'p'].includes(route) ? viewRadar : (views[route] || viewOverview);
   try {
     await view(arg);
   } catch (e) {
@@ -280,7 +281,6 @@ function radarCard(it, soon) {
     : '';
   return `
     <a class="card rcard g-${it.group} ${soon ? 'soon' : ''}" href="#/p/${it.product_id}" data-key="${esc(it.key)}">
-      ${it.cover_id ? `<img class="thumb" loading="lazy" src="/api/photos/${it.cover_id}" alt="">` : '<div class="thumb"></div>'}
       <div>
         <div class="row" style="gap:6px"><span class="t">${esc(it.name)}</span><span class="spacer"></span>${right}</div>
         <div class="tags">${stepChip(it.step)}${tags}</div>
@@ -306,12 +306,12 @@ async function viewRadar() {
   $app.innerHTML = `
     <div data-view="radar">
     <div class="page-head">
-      <h1>${S.me.is_external ? '我的優化' : '雷達'}</h1>
+      <h1>${S.me.is_external ? '我的優化' : '我的待辦'}</h1>
       ${S.me.is_external ? '' : `<div class="seg"><button data-scope="me" class="${scope === 'me' ? 'on' : ''}">我的</button><button data-scope="all" class="${scope === 'all' ? 'on' : ''}">全部卡關</button></div>`}
       <span class="spacer"></span>
       ${hasRole('picker') ? '<a class="btn primary" href="#/new">＋ 新增商品</a>' : ''}
     </div>
-    ${handled ? `<div class="card rcard ghost" style="margin-bottom:12px"><div></div><div><span class="t">${esc(handled.name)}</span><div class="muted">已交棒給 ${esc(handled.to)}</div></div></div>` : ''}
+    ${handled ? `<div class="card rcard ghost" style="margin-bottom:12px"><div><span class="t">${esc(handled.name)}</span><div class="muted">已交棒給 ${esc(handled.to)}</div></div></div>` : ''}
     ${r.stuck_count === 0 ? `<div class="card calm"><b>目前沒有卡關</b><span class="muted">${scope === 'me' && soon.size ? '下面虛線框是最接近超時的件，可以提前處理' : scope === 'all' ? '所有人手上都在時限內' : '你手上沒有待辦'}</span></div>` : ''}
     ${GROUPS.map(([g, label, color]) => byGroup[g].length ? `
       <section class="radar-group">
@@ -324,7 +324,7 @@ async function viewRadar() {
     b.onclick = (e) => { e.preventDefault(); act(() => api('POST', `/api/mentions/${b.dataset.ack}/ack`)); };
   });
   const nav = document.querySelector('#nav a[data-route=radar]');
-  if (nav && scope === 'me') nav.innerHTML = `${S.me.is_external ? '我的優化' : '雷達'}${r.stuck_count ? `<span class="badge">${r.stuck_count}</span>` : ''}`;
+  if (nav && scope === 'me') nav.innerHTML = `${S.me.is_external ? '我的優化' : '我的待辦'}${r.items.length ? `<span class="badge">${r.items.length}</span>` : ''}`;
   if (S.radarScroll) { window.scrollTo(0, S.radarScroll); S.radarScroll = 0; }
 }
 
@@ -337,7 +337,7 @@ function optionsFor(role, selected) {
 
 async function viewNew() {
   $app.innerHTML = `
-    <div class="page-head"><a class="btn small" href="#/radar">← 雷達</a><h1>新增商品</h1></div>
+    <div class="page-head"><a class="btn small" href="#/overview">← 全覽</a><h1>新增商品</h1></div>
     <form class="card section" id="new-form" style="max-width:640px">
       <label class="field"><span>進貨批次</span>
         <select name="batch_id">
@@ -347,11 +347,10 @@ async function viewNew() {
       <label class="field" id="new-batch" ${S.batches.length ? 'hidden' : ''}><span>新批次名稱</span><input type="text" name="batch_name" placeholder="例：9 月第 2 批／鋯石系列" maxlength="40"></label>
       <label class="field"><span>商品名稱</span><input type="text" name="name" required maxlength="100" placeholder="例：14K 金鋯石耳環"></label>
       <div class="row" style="align-items:flex-start">
-        <label class="field" style="flex:1;min-width:150px"><span>美編</span><select name="editor_id">${optionsFor('editor')}</select></label>
         <label class="field" style="flex:1;min-width:150px"><span>上架人員</span><select name="lister_id">${optionsFor('lister')}</select></label>
-        <label class="field" style="flex:1;min-width:150px"><span>審核人</span><select name="reviewer_id">${optionsFor('reviewer')}</select></label>
+        <label class="field" style="flex:1;min-width:150px"><span>審查人</span><select name="reviewer_id">${optionsFor('reviewer')}</select></label>
       </div>
-      <p class="muted">建立後進入「原圖」，由你上傳原圖並逐張勾選。</p>
+      <p class="muted">建立後進入「原圖」：由你上傳原圖並逐張勾選，完成後交給上架人員用原圖直接上架。</p>
       <div class="row"><span class="spacer"></span><button class="btn primary act">建立商品卡</button></div>
     </form>`;
   const f = document.getElementById('new-form');
@@ -360,7 +359,7 @@ async function viewNew() {
     e.preventDefault();
     const data = {
       name: f.name.value,
-      editor_id: Number(f.editor_id.value) || null, lister_id: Number(f.lister_id.value) || null, reviewer_id: Number(f.reviewer_id.value) || null,
+      lister_id: Number(f.lister_id.value) || null, reviewer_id: Number(f.reviewer_id.value) || null,
       ...(f.batch_id.value ? { batch_id: Number(f.batch_id.value) } : { batch_name: f.batch_name.value }),
     };
     act(async () => {
@@ -371,50 +370,110 @@ async function viewNew() {
   };
 }
 
-// ---------- Kanban ----------
+// ---------- 全覽（首頁） ----------
 
-async function viewKanban() {
-  const list = await api('GET', '/api/products');
-  const q = S.kanbanQuery.trim().toLowerCase();
-  const hit = q ? list.filter((p) => (p.name + batchName(p.batch_id)).toLowerCase().includes(q)) : list;
-  const recent = [...list].sort((a, b) => b.updated_at - a.updated_at).slice(0, 3);
+const varTxt = (v) => v > 0 ? `領先 ${fmtWork(v)}` : v < 0 ? `落後 ${fmtWork(-v)}` : '準時';
+const varCls = (v) => v > 0 ? 'ahead' : v < 0 ? 'behind' : 'even';
+
+// 自己負責（現在、過去或接下來）的格子上色，其他灰階
+function isMineCell(c) {
+  return c.holders?.includes(S.me.id) || c.owner === S.me.id || c.holder_id === S.me.id || (c.step === 'assign' && isMkt());
+}
+
+function ovCell(r, c) {
+  const mine = isMineCell(c);
+  const cls = ['ov-cell', `s-${c.state}`, mine ? 'mine' : 'other', c.state === 'current' ? `c-${c.color}` : ''].join(' ');
+  if (c.step === 'assign') {
+    const body = c.state === 'current' ? `<b>待行銷指定</b><span class="mono">等 ${esc(fmtWork(c.held))}</span>`
+      : c.state === 'done' ? `<span class="mono">等了 ${esc(fmtWork(c.held))}</span>` : '<span class="faint">—</span>';
+    return `<td class="${cls}" style="--sc:${STEP_COLOR[c.step]}">${body}</td>`;
+  }
+  const person = member(c.state === 'current' ? c.holder_id : c.state === 'done' ? c.holders[c.holders.length - 1] : c.owner);
+  if (c.state === 'future') {
+    return `<td class="${cls}" style="--sc:${STEP_COLOR[c.step]}"><span class="pname">${esc(person?.name ?? '—')}</span></td>`;
+  }
+  const rounds = c.rounds > 1 ? `<span class="rounds">第 ${c.rounds} 輪</span>` : '';
+  const v = c.variance;
+  return `<td class="${cls}" style="--sc:${STEP_COLOR[c.step]}">
+    <span class="pname">${c.state === 'done' ? '✓ ' : ''}${esc(person?.name ?? '—')}${rounds}</span>
+    <span class="mono hrs">${esc(fmtWork(c.held))}${c.budget != null ? `<small>／${esc(fmtWork(c.budget))}</small>` : ''}</span>
+    ${v != null && v !== 0 ? `<span class="var ${varCls(v)}">${v > 0 ? '+' : '−'}${esc(fmtWork(Math.abs(v)))}</span>` : ''}
+  </td>`;
+}
+
+async function viewOverview() {
+  const q = S.ovBatch == null ? '' : `?batch=${S.ovBatch}`;
+  const d = await api('GET', `/api/overview${q}`);
+  S.ovBatch = d.batch_id;
+  const active = d.rows.filter((r) => !r.done);
+  const done = d.rows.filter((r) => r.done).sort((a, b) => b.finished_at - a.finished_at);
+  const idx = (r) => STEP_ORDER.indexOf(r.step);
+  active.sort(S.ovSort === 'behind' ? (a, b) => a.variance - b.variance || idx(a) - idx(b) : (a, b) => idx(b) - idx(a) || b.variance - a.variance);
+  const ahead = active.filter((r) => r.variance > 0).length;
+  const behind = active.filter((r) => r.variance < 0).length;
+  const returns = d.rows.reduce((s, r) => s + r.returns, 0);
+  const assignable = d.rows.filter((r) => ['assign', 'done'].includes(r.step));
+  S.radarKeys = active.map((r) => r.id);
+  const mineRow = (r) => r.cells.some(isMineCell);
   $app.innerHTML = `
     <div class="page-head">
-      <h1>Kanban</h1>
-      <input type="text" id="kq" placeholder="搜尋商品或批次" value="${esc(S.kanbanQuery)}" style="max-width:260px">
+      <h1>全覽</h1>
+      <div class="seg batch-seg">
+        ${d.batches.map((b) => `<button data-batch="${b.id}" class="${b.id === d.batch_id ? 'on' : ''}">${esc(b.name)} <span class="mono">${b.done}/${b.total}</span></button>`).join('')}
+        <button data-batch="0" class="${d.batch_id === 0 ? 'on' : ''}">全部</button>
+      </div>
       <span class="spacer"></span>
-      ${isMkt() ? '<button class="btn primary" id="bulk-opt">指定優化（可多選）</button>' : ''}
+      ${isMkt() && assignable.length ? `<button class="btn primary" id="bulk-opt">指定優化（${assignable.filter((r) => r.step === 'assign').length} 件待指定）</button>` : ''}
       ${hasRole('picker') ? '<a class="btn" href="#/new">＋ 新增商品</a>' : ''}
     </div>
-    ${q && !hit.length ? `<div class="card section"><p>找不到符合「${esc(S.kanbanQuery)}」的商品</p>
-      <button class="btn small" id="kq-clear">清除搜尋</button>
-      <div class="muted" style="margin-top:12px">最近更新：${recent.map((p) => `<a href="#/p/${p.id}">${esc(p.name)}</a>`).join('、')}</div></div>` : ''}
-    <div class="kanban">
-      ${STEP_ORDER.map((s) => {
-        const items = hit.filter((p) => p.step === s);
-        return `<section class="kcol">
-          <div class="kcol-head"><span class="dot" style="background:${STEP_COLOR[s]}"></span>${esc(stepLabel(s))}<span class="num">${items.length}</span></div>
-          ${items.map((p) => `
-            <a class="card kcard c-${p.color}" href="#/p/${p.id}">
-              <div class="t">${esc(p.name)}</div>
-              <div class="meta">
-                ${p.holder_id ? `${avatar(member(p.holder_id))}<span>${esc(member(p.holder_id)?.name ?? '')}</span>` : ''}
-                ${p.rush ? '<span class="tag rush">急件</span>' : ''}
-                ${p.returned ? '<span class="tag return">退回</span>' : ''}
-                ${p.color === 'red' ? '<span class="tag red">紅</span>' : p.color === 'yellow' ? '<span class="tag yellow">黃</span>' : ''}
-                ${p.held_h != null ? `<span class="mono">${esc(fmtWork(p.held_h))}</span>` : ''}
-                ${p.opt_version ? `<span class="tag green">v${p.opt_version}</span>` : ''}
-              </div>
-            </a>`).join('') || '<div class="muted" style="padding:6px">—</div>'}
-        </section>`;
-      }).join('')}
-    </div>`;
-  const kq = document.getElementById('kq');
-  kq.oninput = () => { S.kanbanQuery = kq.value; clearTimeout(kq._t); kq._t = setTimeout(async () => { await viewKanban(); const n = document.getElementById('kq'); n.focus(); n.setSelectionRange(n.value.length, n.value.length); }, 250); };
-  const clr = document.getElementById('kq-clear');
-  if (clr) clr.onclick = () => { S.kanbanQuery = ''; viewKanban(); };
+    <div class="ov-kpis">
+      <div><span>進行中</span><b class="mono">${active.length}</b></div>
+      <div><span>已完成</span><b class="mono" style="color:var(--emerald)">${done.length}</b></div>
+      <div><span>領先</span><b class="mono" style="color:var(--emerald)">${ahead}</b></div>
+      <div><span>落後</span><b class="mono" style="color:var(--ruby)">${behind}</b></div>
+      <div><span>退件總數</span><b class="mono">${returns}</b></div>
+      <span class="spacer"></span>
+      <div class="legend"><span class="lg mine"></span>我負責的<span class="lg other"></span>其他人<span class="var ahead">+領先</span><span class="var behind">−落後</span></div>
+      <div class="seg"><button data-sort="progress" class="${S.ovSort === 'progress' ? 'on' : ''}">依進度</button><button data-sort="behind" class="${S.ovSort === 'behind' ? 'on' : ''}">落後優先</button></div>
+    </div>
+    <div class="card ov-wrap">
+      <table class="ov">
+        <thead><tr><th class="ov-name">商品</th>${FLOW_COLS.map((c) => `<th style="--sc:${STEP_COLOR[c]}">${esc(stepLabel(c))}</th>`).join('')}<th class="num">領先／落後</th><th class="num">退件</th></tr></thead>
+        <tbody>
+          ${active.map((r) => `<tr class="${mineRow(r) ? 'row-mine' : ''}">
+            <td class="ov-name"><a href="#/p/${r.id}">${esc(r.name)}</a>
+              ${r.opt?.rush ? '<span class="tag rush">急件</span>' : ''}
+              ${d.batch_id === 0 ? `<div class="muted">${esc(batchName(r.batch_id))}</div>` : ''}</td>
+            ${r.cells.map((c) => ovCell(r, c)).join('')}
+            <td class="num"><span class="var big ${varCls(r.variance)}">${esc(varTxt(r.variance))}</span></td>
+            <td class="num mono ${r.returns ? 'over' : 'faint'}">${r.returns || '0'}</td>
+          </tr>`).join('') || `<tr><td colspan="${FLOW_COLS.length + 3}" class="empty">這批沒有進行中的商品</td></tr>`}
+        </tbody>
+      </table>
+    </div>
+    <h2 class="done-h">已完成 <span class="muted mono">${done.length}</span></h2>
+    <div class="card ov-wrap">
+      <table class="ov done-table">
+        <thead><tr><th class="ov-name">商品</th><th>完成時間</th><th>優化</th><th class="num">領先／落後</th><th class="num">退件</th><th></th></tr></thead>
+        <tbody>${done.map((r) => `<tr>
+          <td class="ov-name"><a href="#/p/${r.id}">${esc(r.name)}</a></td>
+          <td class="mono">${r.finished_at ? fmtTime(r.finished_at) : ''}</td>
+          <td>${r.opt ? (r.opt.kind === 'premium' ? '設計師（外包）' : '公司美編') : '—'}</td>
+          <td class="num"><span class="var ${varCls(r.variance)}">${esc(varTxt(r.variance))}</span></td>
+          <td class="num mono ${r.returns ? 'over' : 'faint'}">${r.returns}</td>
+          <td class="num">${isMkt() ? `<button class="btn small" data-reopt="${r.id}">再指定優化</button>` : ''}</td>
+        </tr>`).join('') || '<tr><td colspan="6" class="empty">還沒有完成的商品</td></tr>'}</tbody>
+      </table>
+    </div>
+    <p class="muted" style="margin-top:12px">每一格：負責人・經手時間／標準時間・領先(+)或落後(−)。時間從這個人接到工作才開始算，只算上班時間；前一關拖延不會算到下一關。</p>`;
+  $app.querySelectorAll('[data-batch]').forEach((b) => { b.onclick = () => { S.ovBatch = Number(b.dataset.batch); viewOverview(); }; });
+  $app.querySelectorAll('[data-sort]').forEach((b) => { b.onclick = () => { S.ovSort = b.dataset.sort; viewOverview(); }; });
   const bo = document.getElementById('bulk-opt');
-  if (bo) bo.onclick = () => openAssignModal(list.filter((p) => p.step === 'live'));
+  const toAssign = (rows) => rows.map((r) => ({ id: r.id, name: r.name, batch_id: r.batch_id, step: r.step }));
+  if (bo) bo.onclick = () => openAssignModal(toAssign(assignable), assignable.filter((r) => r.step === 'assign').map((r) => r.id));
+  $app.querySelectorAll('[data-reopt]').forEach((b) => {
+    b.onclick = () => { const r = d.rows.find((x) => x.id === Number(b.dataset.reopt)); openAssignModal(toAssign([r]), [r.id]); };
+  });
 }
 
 // ---------- 指定優化（單件或多件） ----------
@@ -425,19 +484,19 @@ function tomorrowYmd() {
 }
 
 function openAssignModal(liveProducts, preselect = []) {
-  if (!liveProducts.length) return toast('目前沒有「已上架」的商品可以指定', true);
+  if (!liveProducts.length) return toast('目前沒有待指定優化的商品', true);
   const pre = new Set(preselect);
   openModal(`
     <h3>指定優化</h3>
-    <p class="muted">截止前 ${esc(fmtWork(S.settings.rush_threshold_hours))}內會自動變急件，排到優化者雷達最上面。</p>
-    <div class="field"><span>商品（${liveProducts.length} 件已上架）</span>
+    <p class="muted">公司美編做一般優化、外包設計師做精製優化。截止前 ${esc(fmtWork(S.settings.rush_threshold_hours))}內自動變急件，排到優化者待辦最上面。</p>
+    <div class="field"><span>商品（${liveProducts.length} 件可指定；可分次指定給不同的人）</span>
       <div class="row" style="margin-bottom:6px"><button type="button" class="btn small" data-all>全選</button><button type="button" class="btn small" data-none>全不選</button><span class="muted" id="pick-n"></span></div>
-      <div class="pick-list">${liveProducts.map((p) => `<label><input type="checkbox" value="${p.id}" ${pre.has(p.id) ? 'checked' : ''}>${esc(p.name)}<span class="spacer"></span><span class="muted">${esc(batchName(p.batch_id))}</span></label>`).join('')}</div>
+      <div class="pick-list">${liveProducts.map((p) => `<label><input type="checkbox" value="${p.id}" ${pre.has(p.id) ? 'checked' : ''}>${esc(p.name)}<span class="spacer"></span><span class="muted">${p.step === 'done' ? '已完成・再優化' : '待指定'}・${esc(batchName(p.batch_id))}</span></label>`).join('')}</div>
     </div>
     <div class="field"><span>類型</span>
       <div class="hour-pick" id="kind-pick">
-        <label><input type="radio" name="kind" value="general">一般（美編）</label>
-        <label><input type="radio" name="kind" value="premium">精製（外包）</label>
+        <label><input type="radio" name="kind" value="general">一般優化（公司美編）</label>
+        <label><input type="radio" name="kind" value="premium">設計師優化（外包）</label>
       </div></div>
     <label class="field"><span>優化者</span><select name="optimizer" disabled><option value="">先選類型</option></select></label>
     <label class="field"><span>截止日期（最早明天）</span><input type="date" name="date" min="${tomorrowYmd()}"></label>
@@ -500,7 +559,7 @@ function openAssignModal(liveProducts, preselect = []) {
       act(async () => {
         const r = await api('POST', '/api/optimizations', { product_ids: v.ids, kind: v.kind, optimizer_id: v.optimizer, date: v.date, hour: v.hour });
         close();
-        toast(`已指定 ${r.done} 件${r.skipped.length ? `，${r.skipped.length} 件不是已上架狀態已略過` : ''}`);
+        toast(`已指定 ${r.done} 件${r.skipped.length ? `，${r.skipped.length} 件狀態已變更已略過` : ''}`);
       }, null);
     };
     update();
@@ -633,7 +692,7 @@ function missingRaw(p) {
 }
 
 function nextHolderName(p, step) {
-  const field = { edit: 'editor_id', listing: 'lister_id', review: 'reviewer_id', publish: 'lister_id', opt_review: 'reviewer_id' }[step];
+  const field = { raw: 'picker_id', listing: 'lister_id', review: 'reviewer_id', final_review: 'reviewer_id' }[step];
   return member(p[field])?.name ?? '';
 }
 
@@ -643,22 +702,22 @@ function actionPanel(p) {
   const returned = open?.start_reason === 'return' ? `
     <div class="returned"><b>被退回：${(open.reasons || []).map((r) => REASON[r]).join('、')}</b>（${esc(member(open.by_id)?.name ?? '')}・${fmtTime(open.started_at)}）
       <div class="note">${esc(open.note)}</div></div>` : '';
-  const undo = p.undo_left_ms > 0 && p.undo_by === S.me.id
-    ? `<div class="undo-bar"><span>已標記「已上架」</span><span class="num mono" id="undo-left">${Math.ceil(p.undo_left_ms / 1000)}</span><span>秒內可撤銷</span><span class="spacer"></span><button class="btn small" id="undo-btn">撤銷</button></div>` : '';
   const opt = p.active_opt;
   const deadline = opt ? `
     <div class="deadline-box ${opt.rush ? 'rush' : ''}">
       <div><div class="muted">截止</div><b>${esc(fmtDeadline(opt.deadline))}</b></div>
       <div><div class="muted">剩餘上班時間</div><span class="big">${opt.remaining_h > 0 ? esc(fmtWork(opt.remaining_h)) : '已逾期'}</span></div>
       ${opt.rush ? '<span class="tag rush">急件</span>' : ''}
-      <div><div class="muted">類型</div>${opt.kind === 'premium' ? '精製（外包）' : '一般（美編）'}・第 ${opt.rounds} 輪</div>
+      <div><div class="muted">類型</div>${opt.kind === 'premium' ? '設計師優化（外包）' : '一般優化（公司美編）'}・第 ${opt.rounds} 輪</div>
     </div>` : '';
+  const shop = p.sl_url ? `<a class="btn" href="${esc(p.sl_url)}" target="_blank" rel="noopener">開啟 Shopline 頁面</a>` : '';
 
-  if (p.step === 'live') {
-    return `${undo}<div class="card action ${isMkt() ? 'mine' : 'locked'}">
-      <h2>已上架 ${p.opt_version ? `<span class="tag green">優化 v${p.opt_version}</span>` : ''}</h2>
-      <div class="sub">${p.published_at ? `發布於 ${fmtTime(p.published_at)}` : ''}${p.sl_url ? `・<a href="${esc(p.sl_url)}" target="_blank" rel="noopener">開啟 Shopline 頁面</a>` : ''}</div>
-      ${isMkt() ? '<button class="btn primary act" id="assign-one">指定優化</button>' : '<div class="muted">由老闆／行銷決定是否優化</div>'}
+  if (p.step === 'assign' || p.step === 'done') {
+    const title = p.step === 'done' ? `已完成 ${p.opt_version ? `<span class="tag green">優化 v${p.opt_version}</span>` : ''}` : '首次審查通過・待指定優化';
+    return `<div class="card action ${isMkt() ? 'mine' : 'locked'}">
+      <h2>${title}</h2>
+      <div class="sub">${p.step === 'assign' ? '由行銷決定交給公司美編（一般優化）或外包設計師（設計師優化）' : ''}</div>
+      <div class="row">${shop}${isMkt() ? `<button class="btn primary act" id="assign-one">${p.step === 'done' ? '再指定優化' : '指定優化'}</button>` : '<span class="muted">等待行銷指定</span>'}</div>
     </div>`;
   }
   if (!open) return '';
@@ -666,7 +725,7 @@ function actionPanel(p) {
   if (!mine) {
     return `${deadline}<div class="card action locked">
       <h2>目前在「${esc(stepLabel(p.step))}」</h2>
-      <div class="sub">負責人：${who(open.member_id)}・已停留 <span class="mono">${esc(fmtWork(open.visit_held))}</span>${open.budget_hours ? `／標準 <span class="mono">${esc(fmtWork(open.budget_hours))}</span>` : ''}</div>
+      <div class="sub">負責人：${who(open.member_id)}・已經手 <span class="mono">${esc(fmtWork(open.visit_held))}</span>${open.budget_hours ? `／標準 <span class="mono">${esc(fmtWork(open.budget_hours))}</span>` : ''}</div>
       <button class="btn disabled" disabled>只有 ${esc(holder?.name ?? '負責人')} 可以操作</button>
       <span class="muted">需要催的話，在下方留言 @${esc(holder?.name ?? '')}</span>
     </div>`;
@@ -675,62 +734,46 @@ function actionPanel(p) {
   switch (p.step) {
     case 'raw': {
       const miss = missingRaw(p);
-      return `<div class="card action mine">${returned}${head('步驟 1・上傳原圖並逐張勾選', '每張圖都要勾滿「準確／清楚／比例正確」才能送出')}
+      return `<div class="card action mine">${returned}${head('原圖・上傳並逐張勾選', '每張圖都要勾滿「準確／清楚／比例正確」才能交給上架')}
         ${photoGrid(p, 'raw', { upload: true, rawChecks: true, del: true })}
         <div class="row" style="margin-top:14px"><span class="missing">${miss.length ? '缺：' + esc(miss.join('；')) : ''}</span><span class="spacer"></span>
-        <button class="btn primary act" data-do="complete_raw" ${miss.length ? 'disabled' : ''}>原圖完成 → 交給 ${esc(nextHolderName(p, 'edit'))}</button></div></div>`;
-    }
-    case 'edit': {
-      const hasCut = p.photos.some((ph) => ph.kind === 'cutout');
-      const hasMood = p.photos.some((ph) => ph.kind === 'mood');
-      const miss = [!hasCut && '去背圖', !hasMood && '意象圖'].filter(Boolean);
-      return `<div class="card action mine">${returned}${head('步驟 2・做去背圖與意象圖', '兩類各至少 1 張')}
-        <div class="kind-title">原圖（參考）</div>${photoGrid(p, 'raw', { download: true })}
-        <div class="kind-title">去背圖</div>${photoGrid(p, 'cutout', { upload: true, del: true })}
-        <div class="kind-title">意象圖</div>${photoGrid(p, 'mood', { upload: true, del: true })}
-        <div class="row" style="margin-top:14px"><span class="missing">${miss.length ? '缺：' + miss.join('、') : ''}</span><span class="spacer"></span>
-        <button class="btn primary act" data-do="complete_edit" ${miss.length ? 'disabled' : ''}>圖片完成 → 交給 ${esc(nextHolderName(p, 'listing'))}</button></div></div>`;
+        <button class="btn primary act" data-do="complete_raw" ${miss.length ? 'disabled' : ''}>原圖完成 → 交給 ${esc(nextHolderName(p, 'listing'))}</button></div></div>`;
     }
     case 'listing':
-      return `<div class="card action mine">${returned}${head('步驟 3・Shopline 建檔', '下載圖片到 Shopline 建檔，完成後貼上商品連結')}
-        <div class="kind-title">去背圖</div>${photoGrid(p, 'cutout', { download: true })}
-        <div class="kind-title">意象圖</div>${photoGrid(p, 'mood', { download: true })}
+      return `<div class="card action mine">${returned}${head('上架・用原圖直接上 Shopline', '下載原圖、寫好文案與價格上架，貼上 Shopline 網址後交給首次審查')}
+        <div class="kind-title">原圖</div>${photoGrid(p, 'raw', { download: true })}
         <form id="listing-form" style="margin-top:16px">
           <label class="field"><span>商品名稱</span><input type="text" name="sl_name" value="${esc(p.sl_name || p.name)}" maxlength="200"></label>
-          <label class="field"><span>內文</span><textarea name="sl_body" style="min-height:120px">${esc(p.sl_body)}</textarea></label>
+          <label class="field"><span>文案</span><textarea name="sl_body" style="min-height:140px">${esc(p.sl_body)}</textarea></label>
           <div class="row">
             <label class="field" style="flex:1;min-width:140px"><span>價格（只能數字）</span><input type="text" inputmode="decimal" name="sl_price" value="${esc(p.sl_price)}"></label>
-            <label class="field" style="flex:3;min-width:220px"><span>Shopline 商品連結</span><input type="url" name="sl_url" value="${esc(p.sl_url)}" placeholder="https://"></label>
+            <label class="field" style="flex:3;min-width:260px"><span>Shopline 網址</span><input type="url" name="sl_url" value="${esc(p.sl_url)}" placeholder="https://"></label>
           </div>
           <div class="row"><span class="missing" id="listing-miss"></span><span class="spacer"></span>
             <button type="button" class="btn act" id="listing-save">儲存草稿</button>
-            <button class="btn primary act" id="listing-done">建檔完成 → 交給 ${esc(nextHolderName(p, 'review'))}</button></div>
+            <button class="btn primary act" id="listing-done">已上架 → 交給 ${esc(nextHolderName(p, 'review'))} 首次審查</button></div>
         </form></div>`;
     case 'review':
-      return `<div class="card action mine">${returned}${head('步驟 4・審核三項', '對照圖片與 Shopline 頁面，三項都對才通過')}
-        <dl class="kv" style="margin-bottom:12px"><dt>名稱</dt><dd>${esc(p.sl_name)}</dd><dt>價格</dt><dd class="mono">${esc(p.sl_price)}</dd>
-          <dt>連結</dt><dd><a href="${esc(p.sl_url)}" target="_blank" rel="noopener">${esc(p.sl_url)}</a></dd><dt>內文</dt><dd>${esc(p.sl_body)}</dd></dl>
-        <div class="kind-title">去背圖</div>${photoGrid(p, 'cutout')}
-        <div class="kind-title">意象圖</div>${photoGrid(p, 'mood')}
-        <div style="margin-top:14px">${reviewForm('審核')}</div></div>`;
-    case 'publish':
-      return `<div class="card action mine">${head('步驟 5・Shopline 發布', '在 Shopline 發布後，回來按「已上架」')}
-        <div class="row"><a class="btn" href="${esc(p.sl_url)}" target="_blank" rel="noopener">開啟 Shopline 頁面</a><span class="spacer"></span>
-        <button class="btn go act" id="publish-btn">已上架</button></div></div>`;
+      return `<div class="card action mine">${returned}${head('首次審查・急件（標準 ' + esc(fmtWork(open.budget_hours)) + '）', '打開 Shopline 頁面檢查文案、價格、照片，三項都對才通過')}
+        <div class="row" style="margin-bottom:12px">${shop}</div>
+        <dl class="kv" style="margin-bottom:12px"><dt>名稱</dt><dd>${esc(p.sl_name)}</dd><dt>價格</dt><dd class="mono">${esc(p.sl_price)}</dd><dt>文案</dt><dd>${esc(p.sl_body)}</dd></dl>
+        <div class="kind-title">原圖</div>${photoGrid(p, 'raw')}
+        <div style="margin-top:14px">${reviewForm('首次審查')}</div></div>`;
     case 'optimizing':
-      return `${deadline}<div class="card action mine">${returned}${head('優化・直接改 Shopline 線上頁面', '改完填寫改了什麼，按「已更新線上」交給審核')}
-        <div class="row" style="margin-bottom:12px"><a class="btn" href="${esc(p.sl_url)}" target="_blank" rel="noopener">開啟 Shopline 頁面</a></div>
+      return `${deadline}<div class="card action mine">${returned}${head('優化・直接改 Shopline 線上頁面', '改完填寫改了什麼，按「已更新線上」交給最終審查')}
+        <div class="row" style="margin-bottom:12px">${shop}</div>
+        <div class="kind-title">原圖（參考）</div>${photoGrid(p, 'raw', { download: true })}
         <div class="kind-title">優化截圖（選填）</div>${photoGrid(p, 'opt', { upload: true, del: true })}
-        <label class="field" style="margin-top:14px"><span>改了什麼（必填）</span><textarea id="opt-note" placeholder="例：換主圖、補尺寸表"></textarea></label>
+        <label class="field" style="margin-top:14px"><span>改了什麼（必填）</span><textarea id="opt-note" placeholder="例：換主圖、補尺寸表、調整比例"></textarea></label>
         <div class="row"><span class="missing" id="opt-miss">請填寫改了什麼</span><span class="spacer"></span>
-        <button class="btn primary act" id="opt-submit" disabled>已更新線上 → 交給 ${esc(nextHolderName(p, 'opt_review'))}</button></div></div>`;
-    case 'opt_review': {
+        <button class="btn primary act" id="opt-submit" disabled>已更新線上 → 交給 ${esc(nextHolderName(p, 'final_review'))} 最終審查</button></div></div>`;
+    case 'final_review': {
       const lastSubmit = [...p.stints].reverse().find((s) => s.step === 'optimizing' && s.end_note);
-      return `${deadline}<div class="card action mine">${head('優化審核・事後檢查線上頁面', `${opt?.rush ? '急件：' : ''}標準 ${fmtWork(open.budget_hours)}內審完`)}
-        <div class="row" style="margin-bottom:12px"><a class="btn primary" href="${esc(p.sl_url)}" target="_blank" rel="noopener">開啟 Shopline 線上頁面</a></div>
+      return `${deadline}<div class="card action mine">${head('最終審查・有沒有改得更好', `標準 ${esc(fmtWork(open.budget_hours))}內審完；文字或照片比例改錯就退回優化者`)}
+        <div class="row" style="margin-bottom:12px">${shop.replace('btn', 'btn primary')}</div>
         ${lastSubmit ? `<div class="returned" style="background:var(--line-2);color:var(--ink)"><b>${esc(member(lastSubmit.member_id)?.name ?? '')} 改了什麼</b><div class="note">${esc(lastSubmit.end_note)}</div></div>` : ''}
         <div class="kind-title">優化截圖</div>${photoGrid(p, 'opt')}
-        <div style="margin-top:14px">${reviewForm('優化')}</div></div>`;
+        <div style="margin-top:14px">${reviewForm('最終審查')}</div></div>`;
     }
     default:
       return '';
@@ -759,9 +802,9 @@ function ownersBlock(p) {
   };
   const opt = p.active_opt;
   return `<div class="card section"><h2>負責人 ${can ? '<span class="muted">改派會寫入紀錄</span>' : ''}</h2>
-    ${row('選品', 'picker_id', 'picker')}${row('美編', 'editor_id', 'editor')}${row('上架人員', 'lister_id', 'lister')}${row('審核人', 'reviewer_id', 'reviewer')}
+    ${row('選品', 'picker_id', 'picker')}${row('上架人員', 'lister_id', 'lister')}${row('審查人', 'reviewer_id', 'reviewer')}
     ${opt ? (can
-      ? `<label class="field"><span>優化者（${opt.kind === 'premium' ? '外包' : '美編'}）</span><select data-owner="optimizer_id">${optionsFor(opt.kind === 'premium' ? 'external' : 'editor', opt.optimizer_id)}</select></label>`
+      ? `<label class="field"><span>優化者（${opt.kind === 'premium' ? '外包設計師' : '公司美編'}）</span><select data-owner="optimizer_id">${optionsFor(opt.kind === 'premium' ? 'external' : 'editor', opt.optimizer_id)}</select></label>`
       : `<div class="row"><span class="muted" style="width:70px">優化者</span>${who(opt.optimizer_id)}</div>`) : ''}
   </div>`;
 }
@@ -770,7 +813,7 @@ function timelineBlock(p) {
   const items = [...p.stints].reverse();
   return `<div class="card section"><h2>流程紀錄</h2><ul class="timeline">
     ${items.map((s) => {
-      const endTxt = { complete: '完成', pass: '通過', return: '退回', publish: '發布', submit: '更新線上', reassign: '改派' }[s.end_reason] || '';
+      const endTxt = { complete: '完成', pass: '通過', return: '退回', submit: '更新線上', reassign: '改派' }[s.end_reason] || '';
       return `<li class="${s.start_reason === 'return' ? 'ret' : ''} ${s.ended_at == null ? 'open' : ''}">
         <b>${esc(stepLabel(s.step))}</b>・${esc(member(s.member_id)?.name ?? '—')}
         <span class="muted">${fmtTime(s.started_at)} → ${s.ended_at ? fmtTime(s.ended_at) + ' ' + endTxt : '進行中'}・經手 ${esc(fmtWork(s.held))}${s.over > 0 ? `・<span class="over">超出 ${Math.round(s.over * 10) / 10}h</span>` : ''}</span>
@@ -848,7 +891,6 @@ function bindMentionPicker(textarea) {
   textarea.addEventListener('blur', () => setTimeout(close, 150));
 }
 
-let undoTimer;
 async function viewProduct(idStr) {
   const id = Number(idStr);
   const p = await api('GET', `/api/products/${id}`);
@@ -856,7 +898,7 @@ async function viewProduct(idStr) {
   const nextId = S.radarKeys[S.radarKeys.indexOf(id) + 1] || (S.radarKeys[0] !== id ? S.radarKeys[0] : null);
   $app.innerHTML = `
     <div class="page-head">
-      <a href="#/radar" class="btn small">← ${S.me.is_external ? '我的優化' : '雷達'}</a>
+      <a href="#/${S.me.is_external ? 'radar' : 'overview'}" class="btn small">← ${S.me.is_external ? '我的優化' : '全覽'}</a>
       <h1>${esc(p.name)}</h1>${stepChip(p.step)}
       ${p.open?.color === 'red' ? '<span class="tag red">紅色超時</span>' : p.open?.color === 'yellow' ? '<span class="tag yellow">黃色超時</span>' : p.open?.color === 'rush' ? '<span class="tag rush">急件</span>' : ''}
       <span class="muted">${esc(p.batch_name)}</span>
@@ -864,17 +906,17 @@ async function viewProduct(idStr) {
       ${nextId ? `<a class="btn small" href="#/p/${nextId}">下一件 →</a>` : ''}
       ${S.me.is_admin ? '<button class="btn small danger" id="del-product">刪除</button>' : ''}
     </div>
-    <div class="stepper">${STEP_ORDER.map((s, i) => `<div class="step ${i < idx ? 'done' : ''} ${i === idx ? 'cur' : ''}" style="${i === idx ? `background:${STEP_COLOR[s]}` : ''}">${i < idx && idx <= 5 ? '✓ ' : ''}${esc(stepLabel(s))}</div>`).join('')}</div>
+    <div class="stepper">${STEP_ORDER.map((s, i) => `<div class="step ${i < idx ? 'done' : ''} ${i === idx ? 'cur' : ''}" style="${i === idx ? `background:${STEP_COLOR[s]}` : ''}">${i < idx ? '✓ ' : ''}${esc(stepLabel(s))}</div>`).join('')}</div>
     <div id="action">${actionPanel(p)}</div>
     <div class="detail">
       <div>
-        ${!['raw', 'edit'].includes(p.step) || p.open?.member_id !== S.me.id ? `<div class="card section"><h2>圖片</h2>
-          ${['raw', 'cutout', 'mood', 'opt'].filter((k) => p.photos.some((ph) => ph.kind === k)).map((k) => `<div class="kind-title">${KIND[k]}</div>${photoGrid(p, k, { download: true })}`).join('') || '<div class="muted">尚無圖片</div>'}
+        ${p.step !== 'raw' || p.open?.member_id !== S.me.id ? `<div class="card section"><h2>圖片</h2>
+          ${['raw', 'opt'].filter((k) => p.photos.some((ph) => ph.kind === k)).map((k) => `<div class="kind-title">${KIND[k]}</div>${photoGrid(p, k, { download: true })}`).join('') || '<div class="muted">尚無圖片</div>'}
         </div>` : ''}
         ${commentsBlock(p)}
       </div>
       <div>
-        ${p.sl_url && p.step !== 'review' ? `<div class="card section"><h2>Shopline 資料</h2><dl class="kv"><dt>名稱</dt><dd>${esc(p.sl_name)}</dd><dt>價格</dt><dd class="mono">${esc(p.sl_price)}</dd><dt>連結</dt><dd><a href="${esc(p.sl_url)}" target="_blank" rel="noopener">開啟</a></dd></dl></div>` : ''}
+        ${p.sl_url && p.step !== 'review' ? `<div class="card section"><h2>Shopline 資料</h2><dl class="kv"><dt>名稱</dt><dd>${esc(p.sl_name)}</dd><dt>價格</dt><dd class="mono">${esc(p.sl_price)}</dd><dt>網址</dt><dd><a href="${esc(p.sl_url)}" target="_blank" rel="noopener">開啟</a></dd></dl></div>` : ''}
         ${attributionBlock(p)}
         ${S.me.is_external ? '' : ownersBlock(p)}
         ${timelineBlock(p)}
@@ -898,7 +940,7 @@ function bindProduct(p) {
 
   $app.querySelectorAll('[data-do]').forEach((b) => {
     b.onclick = () => {
-      const next = { complete_raw: 'edit', complete_edit: 'listing' }[b.dataset.do];
+      const next = { complete_raw: 'listing' }[b.dataset.do];
       doAction(b.dataset.do, {}, nextHolderName(p, next));
     };
   });
@@ -944,7 +986,7 @@ function bindProduct(p) {
     const vals = () => ({ sl_name: lf.sl_name.value, sl_body: lf.sl_body.value, sl_price: lf.sl_price.value.trim(), sl_url: lf.sl_url.value.trim() });
     const sync = () => {
       const v = vals();
-      const miss = [!v.sl_name.trim() && '名稱', !v.sl_body.trim() && '內文', !v.sl_price && '價格', !v.sl_url && 'Shopline 連結'].filter(Boolean);
+      const miss = [!v.sl_name.trim() && '名稱', !v.sl_body.trim() && '文案', !v.sl_price && '價格', !v.sl_url && 'Shopline 網址'].filter(Boolean);
       const badPrice = v.sl_price && !/^\d+(\.\d{1,2})?$/.test(v.sl_price);
       lf.sl_price.classList.toggle('invalid', !!badPrice);
       document.getElementById('listing-miss').textContent = badPrice ? '價格只能填數字' : miss.length ? '缺：' + miss.join('、') : '';
@@ -959,48 +1001,25 @@ function bindProduct(p) {
     lf.onsubmit = (e) => { e.preventDefault(); doAction('complete_listing', vals(), nextHolderName(p, 'review')); };
   }
 
-  // 審核（第 4 步與第 4' 步）
+  // 首次審查與最終審查
   const actionEl = document.getElementById('action');
   if (actionEl.querySelector('[data-checks]')) {
-    const isOpt = p.step === 'opt_review';
+    const isFinal = p.step === 'final_review';
+    const optimizer = isFinal ? member(p.active_opt.optimizer_id)?.name : '';
     bindReviewForm(actionEl, {
-      onPass: (checks) => isOpt
-        ? doAction('opt_pass', { checks }, '（已上架，記錄新版本）')
-        : doAction('review_pass', { checks }, nextHolderName(p, 'publish')),
+      onPass: (checks) => isFinal
+        ? doAction('final_pass', { checks }, '（已完成）')
+        : doAction('review_pass', { checks }, '行銷（待指定優化）'),
       onReturn: (reasons, note) => {
-        const to = isOpt ? member(p.active_opt.optimizer_id)?.name : reasons.includes('photo') ? nextHolderName(p, 'edit') : nextHolderName(p, 'listing');
-        doAction(isOpt ? 'opt_return' : 'review_return', { reasons, note }, `${to}（退回）`);
+        const to = isFinal ? optimizer : reasons.includes('photo') ? nextHolderName(p, 'raw') : nextHolderName(p, 'listing');
+        doAction(isFinal ? 'final_return' : 'review_return', { reasons, note }, `${to}（退回）`);
       },
-      routeHint: (reasons) => isOpt
-        ? `會退回 ${member(p.active_opt.optimizer_id)?.name ?? '優化者'}`
+      routeHint: (reasons) => isFinal
+        ? `會退回優化者 ${optimizer}，記一次退件`
         : reasons.includes('photo')
-          ? `會退回美編 ${nextHolderName(p, 'edit')}${reasons.length > 1 ? '，其餘原因寫在留言讓下一關看到' : ''}`
-          : `會退回上架人員 ${nextHolderName(p, 'listing')}`,
+          ? `會退回選品 ${nextHolderName(p, 'raw')} 重拍${reasons.length > 1 ? `；${reasons.filter((r) => r !== 'photo').map((r) => REASON[r]).join('、')}的退件同時記在上架 ${nextHolderName(p, 'listing')}` : ''}`
+          : `會退回上架 ${nextHolderName(p, 'listing')}，記一次退件`,
     });
-  }
-
-  // 發布：二次確認 → 30 秒撤銷
-  const pub = document.getElementById('publish-btn');
-  if (pub) {
-    pub.onclick = () => openModal(`
-      <h3>確認已在 Shopline 發布？</h3>
-      <p>「${esc(p.name)}」會標記為已上架。<br><span class="muted">送出後 30 秒內可以撤銷。撤銷只會改系統紀錄，不會撤回 Shopline 上的發布。</span></p>
-      <div class="acts"><button class="btn" data-close>取消</button><button class="btn go" id="pub-confirm">確認已上架</button></div>`,
-    (m, close) => {
-      m.querySelector('#pub-confirm').onclick = () => { close(); doAction('publish'); };
-    });
-  }
-  const undoBtn = document.getElementById('undo-btn');
-  clearInterval(undoTimer);
-  if (undoBtn) {
-    let left = Math.ceil(p.undo_left_ms / 1000);
-    undoTimer = setInterval(() => {
-      left--;
-      const el = document.getElementById('undo-left');
-      if (!el || left <= 0) { clearInterval(undoTimer); if (el) refresh(); return; }
-      el.textContent = left;
-    }, 1000);
-    undoBtn.onclick = () => { clearInterval(undoTimer); doAction('undo_publish'); };
   }
 
   // 優化
@@ -1011,7 +1030,7 @@ function bindProduct(p) {
       btn.disabled = !optNote.value.trim();
       document.getElementById('opt-miss').textContent = optNote.value.trim() ? '' : '請填寫改了什麼';
     };
-    btn.onclick = () => doAction('submit_opt', { note: optNote.value.trim() }, nextHolderName(p, 'opt_review'));
+    btn.onclick = () => doAction('submit_opt', { note: optNote.value.trim() }, nextHolderName(p, 'final_review'));
   }
   const assignOne = document.getElementById('assign-one');
   if (assignOne) assignOne.onclick = () => openAssignModal([{ id: p.id, name: p.name, batch_id: p.batch_id }], [p.id]);
@@ -1051,22 +1070,6 @@ function bindProduct(p) {
     act(async () => { await api('DELETE', `/api/products/${id}`); location.hash = '#/radar'; }, '已刪除', 'none');
 }
 
-// ---------- 整批進度 ----------
-
-async function viewBatches() {
-  const list = await api('GET', '/api/batches');
-  $app.innerHTML = `
-    <div class="page-head"><h1>整批進度</h1><span class="muted">依進貨批次；已上架含優化中</span></div>
-    ${list.length ? `<div class="batches">${list.map((b) => `
-      <div class="card section">
-        <h2>${esc(b.name)}<span class="spacer"></span><span class="mono">${b.listed}/${b.total}</span></h2>
-        <div class="progress"><div style="width:${b.listed_pct}%"></div></div>
-        <div class="stepcounts">${STEP_ORDER.map((s) => `<div class="${b.counts[s] ? '' : 'zero'}"><b>${b.counts[s] || 0}</b>${esc(stepLabel(s))}</div>`).join('')}</div>
-        ${b.slowest ? `<div class="row" style="font-size:14px"><span class="muted">最慢</span><a href="#/p/${b.slowest.product_id}">${esc(b.slowest.name)}</a>
-          卡在 ${stepChip(b.slowest.step)} ${who(b.slowest.holder_id)} <span class="mono">${esc(fmtWork(b.slowest.held_h))}</span></div>` : '<div class="muted">這批都已上架</div>'}
-      </div>`).join('')}</div>` : '<p class="empty">還沒有批次。選品建卡時會建立批次。</p>'}`;
-}
-
 // ---------- 延誤分析 ----------
 
 async function viewAnalysis() {
@@ -1075,35 +1078,46 @@ async function viewAnalysis() {
   const m = r.metrics;
   const maxOver = Math.max(1, ...r.ranking.map((x) => x.over));
   const kpi = (label, value, unit, hint) => `<div class="card kpi"><div class="label">${label}</div><div class="value">${value ?? '—'}${value != null && unit ? `<small> ${unit}</small>` : ''}</div>${hint ? `<div class="hint">${hint}</div>` : ''}</div>`;
+  const reviewers = r.ranking.filter((x) => x.review_rounds > 0).sort((x, y) => (y.review_avg ?? 0) - (x.review_avg ?? 0));
   $app.innerHTML = `
     <div class="page-head">
       <h1>延誤分析</h1>
       <div class="seg" data-f="scope">${[['all', '全部'], ['rush', '急件'], ['normal', '一般件']].map(([k, l]) => `<button data-v="${k}" class="${a.scope === k ? 'on' : ''}">${l}</button>`).join('')}</div>
       <div class="seg" data-f="days">${[[7, '7 天'], [30, '30 天'], [90, '90 天'], [0, '全部']].map(([k, l]) => `<button data-v="${k}" class="${a.days === k ? 'on' : ''}">${l}</button>`).join('')}</div>
-      <select id="ana-batch" style="max-width:220px"><option value="0">全部批次</option>${S.batches.map((b) => `<option value="${b.id}" ${a.batch === b.id ? 'selected' : ''}>${esc(b.name)}</option>`).join('')}</select>
+      <select id="ana-batch" style="max-width:240px"><option value="0">全部批次</option>${S.batches.map((b) => `<option value="${b.id}" ${a.batch === b.id ? 'selected' : ''}>${esc(b.name)}</option>`).join('')}</select>
     </div>
     <div class="kpis">
-      ${kpi('卡關平均停留', m.stuck_dwell_h, 'h', `從變黃到有人動作・${m.stuck_n} 次`)}
-      ${kpi('誤報率', m.false_alarm_rate, '%', `變黃後沒人催就完成・${m.false_alarm_n} 次`)}
-      ${kpi('審核一次通過率', m.review_first_pass.rate, '%', `第 4 步・${m.review_first_pass.n} 件`)}
-      ${kpi('優化一次通過率', m.opt_first_pass.rate, '%', `第 4' 步・${m.opt_first_pass.n} 件`)}
-      ${kpi('美編平均停留', m.edit_avg_h, 'h', '整條線的瓶頸關卡')}
-      ${kpi('發布撤銷', m.undo_count, '次')}
-      ${kpi('錯過截止', m.missed_deadlines, '件', '優化期限')}
+      ${kpi('卡關平均停留', m.stuck_dwell_h, 'h', `從超時到有人動作・${m.stuck_n} 次`)}
+      ${kpi('誤報率', m.false_alarm_rate, '%', `超時後沒人催就完成・${m.false_alarm_n} 次`)}
+      ${kpi('首次審查一次通過率', m.review_first_pass.rate, '%', `${m.review_first_pass.n} 件`)}
+      ${kpi('最終審查一次通過率', m.final_first_pass.rate, '%', `${m.final_first_pass.n} 件`)}
+      ${kpi('首次審查平均耗時', m.review_avg_h, 'h', '從收到到審完')}
+      ${kpi('退件總數', m.returns_total, '次')}
+      ${kpi('錯過優化截止', m.missed_deadlines, '件')}
     </div>
     <div class="card section">
-      <h2>延誤排行 <span class="muted">依「超出標準時間」排序，SLA 長的關卡不吃虧</span></h2>
+      <h2>個人排行 <span class="muted">依「超出標準時間」排序；時間從本人接到工作才開始算</span></h2>
       <div class="table-wrap"><table class="rank">
-        <thead><tr><th>#</th><th>負責人</th><th>身分</th><th class="num">經手</th><th>超出標準</th><th class="num">延誤次數</th><th>判斷</th></tr></thead>
+        <thead><tr><th>#</th><th>負責人</th><th>身分</th><th class="num">經手</th><th>超出標準</th><th class="num">延誤次數</th><th>判斷</th><th class="num">被退件</th><th>退件原因</th></tr></thead>
         <tbody>${r.ranking.map((x, i) => `<tr>
           <td class="mono">${i + 1}</td><td>${who(x.member_id)}</td><td class="muted">${x.roles.map((ro) => S.roles[ro]).join('、')}</td>
           <td class="num mono">${x.held}h</td>
           <td style="min-width:140px"><div class="row" style="gap:8px;flex-wrap:nowrap"><div class="overbar" style="width:${(x.over / maxOver) * 100}px"></div><span class="mono ${x.over > 0 ? 'over' : ''}">${x.over}h</span></div></td>
           <td class="num mono">${x.late_count}</td>
           <td>${x.late_count ? `${x.speed ? `<span class="tag yellow">個人速度 ${x.speed}</span> ` : ''}${x.capacity ? `<span class="tag blue">產能不足 ${x.capacity}</span>` : ''}` : '<span class="tag green">準時</span>'}</td>
-        </tr>`).join('') || '<tr><td colspan="7" class="empty">這個範圍還沒有資料</td></tr>'}</tbody>
+          <td class="num mono ${x.returned ? 'over' : ''}">${x.returned}</td>
+          <td class="muted">${Object.entries(x.returned_reasons).filter(([, n]) => n).map(([k, n]) => `${REASON[k]} ${n}`).join('、') || '—'}</td>
+        </tr>`).join('') || '<tr><td colspan="9" class="empty">這個範圍還沒有資料</td></tr>'}</tbody>
       </table></div>
-      <p class="muted" style="margin-top:12px">「產能不足」：延誤當下手上件數 ≥ 同身分平均的 ${S.settings.capacity_ratio} 倍，建議加人或錯開發件；否則標「個人速度」。優化者只看是否在截止時間前交件，審核拖延的時間不算在優化者身上。</p>
+      <p class="muted" style="margin-top:12px">被退件依原因算到做那部分的人：照片 → 選品、文案／價格 → 上架人員、最終審查退回 → 優化者。「產能不足」：延誤當下手上件數 ≥ 同身分平均的 ${S.settings.capacity_ratio} 倍。</p>
+    </div>
+    <div class="card section">
+      <h2>審查人效率 <span class="muted">審查拖延不算到後面製作的人身上</span></h2>
+      <div class="table-wrap"><table class="rank">
+        <thead><tr><th>審查人</th><th class="num">審查次數</th><th class="num">平均每次耗時</th><th class="num">超出標準</th><th class="num">退件發出</th></tr></thead>
+        <tbody>${reviewers.map((x) => `<tr><td>${who(x.member_id)}</td><td class="num mono">${x.review_rounds}</td><td class="num mono">${x.review_avg}h</td>
+          <td class="num mono ${x.over > 0 ? 'over' : ''}">${x.over}h</td><td class="num mono">${x.issued}</td></tr>`).join('') || '<tr><td colspan="5" class="empty">還沒有審查紀錄</td></tr>'}</tbody>
+      </table></div>
     </div>`;
   $app.querySelectorAll('[data-f]').forEach((seg) => {
     seg.querySelectorAll('button').forEach((b) => {
@@ -1116,9 +1130,9 @@ async function viewAnalysis() {
 // ---------- 紀錄 ----------
 
 const ACTIONS = {
-  product_add: '新增商品', raw_done: '完成原圖', edit_done: '完成美編圖', listing_done: '完成建檔', listing_save: '儲存建檔草稿',
-  review_pass: '審核通過', review_return: '退回', publish: '發布', publish_undo: '撤銷發布', opt_assign: '指定優化',
-  opt_submit: '更新線上', opt_pass: '優化審核通過', opt_return: '退回優化', reassign: '改派', comment_add: '留言',
+  product_add: '新增商品', raw_done: '完成原圖', listing_done: '完成上架', listing_save: '儲存上架草稿',
+  review_pass: '首次審查通過', review_return: '退回', opt_assign: '指定優化',
+  opt_submit: '更新線上', final_pass: '最終審查通過', final_return: '退回優化', reassign: '改派', comment_add: '留言',
   comment_delete: '刪除留言', photo_add: '上傳照片', photo_delete: '刪除照片', mention_ack: '已讀提及',
   member_add: '新增成員', member_edit: '修改成員', member_reset: '重設綁定', link_create: '產生外包連結', link_revoke: '讓外包連結失效',
   settings_edit: '修改設定', batch_edit: '修改批次', product_delete: '刪除商品', product_restore: '還原商品', photo_restore: '還原照片', comment_restore: '還原留言',
@@ -1142,7 +1156,7 @@ async function viewSettings() {
   const trash = await api('GET', '/api/trash');
   const st = S.settings;
   const internalRoles = Object.entries(S.roles).filter(([k]) => k !== 'external');
-  const SLA_LABEL = { raw: '原圖', edit: '美編', listing: '建檔', review: '審核', publish: '發布', opt_general: '一般優化', opt_premium: '精製優化', opt_review: '優化審核' };
+  const SLA_LABEL = { raw: '原圖', listing: '上架', review: '首次審查', opt_general: '一般優化', opt_premium: '設計師優化', final_review: '最終審查' };
   $app.innerHTML = `
     <div class="page-head"><h1>設定</h1></div>
     <div class="set-grid">

@@ -1,52 +1,35 @@
-# 商品上架流程協作
+# TZG 商品上架跟進
 
-內部小團隊（< 20 人）用的線上協作系統：一件商品一張卡片，上傳照片、留言討論，依流程階段推進。流程圖、關係圖和圖表都由資料自動產生。
+內部團隊用的上架協作系統。一批約 20 件商品，從原圖、上架、首次審查、指定優化、優化到最終審查，一張全覽表就能看清楚誰領先、誰落後、卡在誰手上、誰被退件幾次。
 
-## 功能
-
-| 模組 | 內容 |
-|---|---|
-| 登入 | 管理者在設定頁建立名字。員工第一次在某台裝置點自己的名字，名字就綁定到那台裝置；之後打開直接進入，已綁定的名字不會再出現在登入頁。換裝置或選錯，由管理者在設定頁按「重設綁定」 |
-| 看板 | 依階段分欄，卡片顯示封面照、負責人、照片數／留言數、停留天數（≥3 天黃、≥7 天紅） |
-| 商品頁 | 多張照片上傳（自動壓縮到 1920px）、留言串、推進／退回階段、負責人、上架平台、流程紀錄 |
-| 流程圖 | 依設定的階段自動產生，顯示各階段件數、平均停留天數，自動標出瓶頸 |
-| 關係圖 | 負責人 ↔ 商品 ↔ 平台，點節點高亮關聯 |
-| 圖表 | 進行中／已上架／近 7 天新增與上架／卡關件數、各階段件數、每人手上件數、平均停留天數、卡關清單 |
-| 紀錄 | 所有操作：誰、何時、做了什麼 |
-| 設定（管理者） | 成員（新增、改名、管理者、重設綁定、停用）、流程階段（新增、改名、排序、刪除）、上架平台、回收區（刪除的商品／照片／留言可還原） |
-
-多人同時使用時每 10 秒自動同步；正在輸入時不會刷新，避免蓋掉內容。
+規格見 [docs/spec-v2.md](docs/spec-v2.md)。
 
 ## 技術
 
-- Cloudflare Workers（API + 靜態前端）
-- D1：資料庫，資料表在第一次請求時自動建立
-- R2：照片儲存
-- 前端：純 HTML／CSS／JS，無框架、無建置步驟
+- Cloudflare Workers：API 和前端靜態檔
+- D1：資料庫，資料表在第一次打開網頁時自動建立，並自動建立預設成員（管理員 1 位，每種身分各 3 位）
+- R2：存放原圖和優化截圖
+- 前端：純 HTML／CSS／JS，沒有建置步驟
+- 時間與責任歸屬的計算放在 `src/worktime.js`、`src/analytics.js`，是純函式，有單元測試
 
-## 部署到 Cloudflare（約 10 分鐘）
+## 部署到 Cloudflare
 
-1. **建立 D1 資料庫**：Cloudflare 後台 → Storage & Databases → D1 → Create，名稱填 `product-listing-db`。建好後複製 **Database ID**。
-2. **填入 ID**：在 GitHub 編輯 `wrangler.toml`，把 `database_id = "00000000-..."` 換成上一步複製的 ID，commit。
-3. **建立 R2 bucket**：後台 → R2 → Create bucket，名稱填 `product-listing-photos`。第一次使用 R2 需要綁定付款方式；每月 10GB 以內免費。
-4. **連接 GitHub 部署**：後台 → Workers & Pages → Create → Import a repository → 選這個 repo。
-   - Build command：留空
-   - Deploy command：`npx wrangler deploy`
-5. 部署完成後打開 `https://product-listing-flow.<你的子網域>.workers.dev`，建立第一位成員。第一位成員自動成為管理者，並綁定目前的裝置。
-
-之後每次 push 到 main 都會自動重新部署。
+1. **建立 D1 資料庫**：Cloudflare 後台 → Storage & Databases → D1 → Create，名稱填 `product-listing-db`，建好後複製 Database ID。
+2. **填入 ID**：把 `wrangler.toml` 裡的 `database_id` 換成剛才複製的 ID。
+3. **建立 R2 儲存空間**：R2 → Create bucket，名稱填 `product-listing-photos`。第一次使用 R2 需要綁定付款方式，每月 10GB 以內免費。
+4. **連接 GitHub**：Workers & Pages → Create → Import a repository → 選這個 repo。Build command 留空，Deploy command 填 `npx wrangler deploy`。
+5. **第一次登入**：部署完成後，請**你本人先打開網頁，選「管理員」**，綁定到你的電腦。接著到「設定」把預設名字改成員工的真名，再勾選每個人的身分。
 
 ## 本機開發
 
 ```bash
 npm install
-npm run dev   # http://localhost:8787，D1／R2 使用本機模擬
+npm test      # 時間計算與責任歸屬的單元測試
+npm run dev   # http://localhost:8787
 ```
 
-## 安全性說明
+## 安全性
 
-- 裝置綁定使用 256-bit 隨機 token，存在 HttpOnly cookie，資料庫只存 SHA-256 雜湊。其他人無法冒用已綁定的名字。
-- 入口沒有密碼，**尚未綁定的名字**任何拿到網址的人都能點選。新增成員後請盡快讓本人完成綁定。
-- 一個名字只能綁一台裝置。員工同時用手機和電腦時，需要管理者重設後在新裝置重新綁定。
-- 清除瀏覽器 Cookie 或使用無痕模式會失去綁定，需要管理者重設。
-- 照片需要已綁定的裝置才能讀取。
+- 裝置綁定使用隨機 token，存在 HttpOnly cookie 裡，資料庫只存它的雜湊值。
+- 還沒綁定的名字，任何拿到網址的人都能點，所以部署後請盡快讓每個人完成第一次登入。
+- 一個名字只能綁一台裝置。換裝置、清除 Cookie 或使用無痕模式時，要請管理員重設。

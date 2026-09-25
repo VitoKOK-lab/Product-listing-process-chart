@@ -2,8 +2,8 @@
 // 資料：D1（DB）；照片：R2（PHOTOS）；前端：public/
 import { localYmd, localToEpoch, dayHours, workHoursBetween } from './worktime.js';
 import {
-  computeStintHours, buildRadar, attributionFor, deadlineBreakdown, ranking, metrics,
-  stintColor, isRushNow, optRemaining, STEP_LABEL,
+  computeStintHours, buildRadar, attributionFor, deadlineBreakdown, ranking, metrics, overviewRows,
+  optimizerBudget, stintColor, isRushNow, optRemaining, STEP_LABEL, REASON_LABEL,
 } from './analytics.js';
 
 const SCHEMA = [
@@ -43,24 +43,24 @@ const SCHEMA = [
 ];
 
 export const ROLES = {
-  picker: '選品', editor: '美編', lister: '上架人員', reviewer: '審核人', marketing: '老闆／行銷', external: '外包設計師',
+  picker: '選品', editor: '美編', lister: '上架人員', reviewer: '審查人', marketing: '老闆／行銷', external: '外包設計師',
 };
-const SEED_PREFIX = { picker: '選品', editor: '美編', lister: '上架', reviewer: '審核', marketing: '行銷', external: '外包' };
+const SEED_PREFIX = { picker: '選品', editor: '美編', lister: '上架', reviewer: '審查', marketing: '行銷', external: '外包' };
 const COLORS = ['#1E4E8C', '#0E7C5A', '#6B3FA0', '#1B7F8C', '#B8741A', '#8C2F6B', '#4A6B1E', '#3D4F7A'];
 
 const DEFAULT_SETTINGS = {
   work: { days: [1, 2, 3, 4, 5], start: 9, end: 18, holidays: [], tz: 480 },
-  sla_days: { raw: 1, edit: 3, listing: 1, review: 1, publish: 0.5, opt_general: 3, opt_premium: 7, opt_review: 1 },
+  sla_days: { raw: 1, listing: 1, review: 1, opt_general: 3, opt_premium: 7, final_review: 1 },
   rush_threshold_days: 2,
   rush_review_hours: 2,
   capacity_ratio: 1.5,
 };
 
-const STEP_OWNER = { raw: 'picker_id', edit: 'editor_id', listing: 'lister_id', review: 'reviewer_id', publish: 'lister_id', opt_review: 'reviewer_id' };
-const STEP_ROLE = { raw: 'picker', edit: 'editor', listing: 'lister', review: 'reviewer', publish: 'lister', opt_review: 'reviewer' };
+const STEP_OWNER = { raw: 'picker_id', listing: 'lister_id', review: 'reviewer_id', final_review: 'reviewer_id' };
+const STEP_ROLE = { raw: 'picker', listing: 'lister', review: 'reviewer', final_review: 'reviewer' };
+const NO_STINT = ['assign', 'done']; // 待指定優化、已完成：沒有人拿著
 const REASONS = ['photo', 'copy', 'price'];
 const MAX_PHOTO_BYTES = 10 * 1024 * 1024;
-const UNDO_MS = 30000;
 
 let schemaReady = false;
 
@@ -143,14 +143,15 @@ async function loadSettings(db) {
   const s = structuredClone(DEFAULT_SETTINGS);
   for (const r of results) { try { s[r.key] = JSON.parse(r.value); } catch { /* 保留預設 */ } }
   const dh = dayHours(s.work);
+  s.sla_days = { ...DEFAULT_SETTINGS.sla_days, ...s.sla_days };
   s.rush_threshold_hours = s.rush_threshold_days * dh;
+  s.final_review_hours = s.sla_days.final_review * dh;
   s.day_hours = dh;
   return s;
 }
 
 function budgetFor(step, settings) {
-  const key = { raw: 'raw', edit: 'edit', listing: 'listing', review: 'review', publish: 'publish', opt_review: 'opt_review' }[step];
-  return key ? settings.sla_days[key] * settings.day_hours : null;
+  return ['raw', 'listing', 'review', 'final_review'].includes(step) ? settings.sla_days[step] * settings.day_hours : null;
 }
 
 async function memberRoles(db, id) {
@@ -219,9 +220,9 @@ async function checkVersion(db, p, version) {
 }
 
 const ACTION_TEXT = {
-  product_add: '新增商品', raw_done: '完成原圖', edit_done: '完成美編圖', listing_done: '完成建檔', listing_save: '儲存建檔資料',
-  review_pass: '審核通過', review_return: '退回', publish: '發布', publish_undo: '撤銷發布', opt_assign: '指定優化',
-  opt_submit: '更新線上', opt_pass: '優化審核通過', opt_return: '退回優化', reassign: '改派', comment_add: '留言',
+  product_add: '新增商品', raw_done: '完成原圖', listing_done: '完成上架', listing_save: '儲存上架資料',
+  review_pass: '首次審查通過', review_return: '退回', opt_assign: '指定優化',
+  opt_submit: '更新線上', final_pass: '最終審查通過', final_return: '退回優化', reassign: '改派', comment_add: '留言',
 };
 
 async function memberHasRole(db, memberId, role) {
@@ -246,7 +247,7 @@ function transition(db, p, open, me, { endReason, endNote = null, next, updates 
     stmts.push(db.prepare('UPDATE stints SET ended_at = ?, end_reason = ?, end_note = COALESCE(?, end_note) WHERE id = ?')
       .bind(t, endReason, endNote, open.id));
   }
-  if (next && next.step !== 'live') {
+  if (next && !NO_STINT.includes(next.step)) {
     stmts.push(db.prepare(`INSERT INTO stints (product_id, optimization_id, step, member_id, role, started_at, budget_hours,
       start_reason, reasons, note, by_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .bind(p.id, next.optimization_id ?? null, next.step, next.member_id, next.role, t, next.budget ?? null,
@@ -449,21 +450,19 @@ route('PATCH', '/api/batches/:id', async ({ db, request, me, params }) => {
 // ---------- 全部資料載入（雷達／看板／分析共用） ----------
 
 async function loadAll(db) {
-  const [products, stints, opts, mentions, comments, roles, photos] = await Promise.all([
+  const [products, stints, opts, mentions, comments, roles] = await Promise.all([
     db.prepare('SELECT * FROM products WHERE deleted_at IS NULL').all(),
     db.prepare('SELECT s.* FROM stints s JOIN products p ON p.id = s.product_id WHERE p.deleted_at IS NULL').all(),
     db.prepare('SELECT o.* FROM optimizations o JOIN products p ON p.id = o.product_id WHERE p.deleted_at IS NULL').all(),
     db.prepare('SELECT * FROM mentions WHERE resolved_at IS NULL').all(),
     db.prepare('SELECT product_id, member_id, created_at FROM comments WHERE deleted_at IS NULL').all(),
     db.prepare('SELECT mr.member_id, mr.role FROM member_roles mr JOIN members m ON m.id = mr.member_id WHERE m.active = 1').all(),
-    db.prepare(`SELECT product_id, MIN(id) AS cover_id FROM photos WHERE deleted_at IS NULL AND kind IN ('mood','cutout','raw')
-      GROUP BY product_id`).all(),
   ]);
   const roleMembers = {};
   for (const r of roles.results) (roleMembers[r.role] ||= []).push(r.member_id);
   return {
     products: products.results, stints: stints.results, optimizations: opts.results, mentions: mentions.results,
-    comments: comments.results, roleMembers, covers: new Map(photos.results.map((r) => [r.product_id, r.cover_id])),
+    comments: comments.results, roleMembers,
   };
 }
 
@@ -475,12 +474,11 @@ route('GET', '/api/radar', async ({ db, me, url, settings }) => {
   const d = await loadAll(db);
   const t = now();
   const hoursMap = computeStintHours(d.stints, d.optimizations, t, cfgOf(settings));
-  const r = buildRadar({ ...d, me: me.id, scope, now: t, cfg: cfgOf(settings), settings, hoursMap });
+  const r = buildRadar({ ...d, me: me.id, meRoles: me.roles, scope, now: t, cfg: cfgOf(settings), settings, hoursMap });
   if (scope === 'all') {
     r.items = r.items.filter((i) => i.group !== 'mine');
     r.upcoming = [];
   }
-  for (const it of r.items) it.cover_id = d.covers.get(it.product_id) ?? null;
   return json(r);
 });
 
@@ -499,7 +497,7 @@ route('GET', '/api/products', async ({ db, me, settings }) => {
     return {
       id: p.id, name: p.name, batch_id: p.batch_id, step: p.step, version: p.version, updated_at: p.updated_at,
       holder_id: s?.member_id ?? null, color: s ? stintColor(s, h, opt, t, cfg, settings) : 'ok',
-      held_h: h ? Math.round((h.visit_held ?? h.held) * 10) / 10 : null, cover_id: d.covers.get(p.id) ?? null,
+      held_h: h ? Math.round((h.visit_held ?? h.held) * 10) / 10 : null,
       deadline: opt?.deadline ?? null, rush: !!(opt && isRushNow(opt, t, cfg, settings)),
       remaining_h: opt ? Math.round(optRemaining(opt, t, cfg) * 10) / 10 : null, opt_version: p.opt_version,
       returned: s?.start_reason === 'return',
@@ -527,7 +525,7 @@ route('POST', '/api/products', async ({ db, request, me, settings }) => {
     if (!(await db.prepare('SELECT id FROM batches WHERE id = ?').bind(batchId).first())) throw new HttpError(400, '批次不存在');
   }
   const owners = {};
-  for (const [field, role, label] of [['editor_id', 'editor', '美編'], ['lister_id', 'lister', '上架人員'], ['reviewer_id', 'reviewer', '審核人']]) {
+  for (const [field, role, label] of [['lister_id', 'lister', '上架人員'], ['reviewer_id', 'reviewer', '審查人']]) {
     owners[field] = await validOwner(db, b[field], role);
     if (!owners[field]) {
       // 只有一個人時自動帶入
@@ -538,8 +536,8 @@ route('POST', '/api/products', async ({ db, request, me, settings }) => {
     }
   }
   const t = now();
-  const res = await db.prepare(`INSERT INTO products (batch_id, name, step, picker_id, editor_id, lister_id, reviewer_id, created_at, updated_at)
-    VALUES (?, ?, 'raw', ?, ?, ?, ?, ?, ?)`).bind(batchId, name, me.id, owners.editor_id, owners.lister_id, owners.reviewer_id, t, t).run();
+  const res = await db.prepare(`INSERT INTO products (batch_id, name, step, picker_id, lister_id, reviewer_id, created_at, updated_at)
+    VALUES (?, ?, 'raw', ?, ?, ?, ?, ?)`).bind(batchId, name, me.id, owners.lister_id, owners.reviewer_id, t, t).run();
   const id = res.meta.last_row_id;
   await db.batch([
     db.prepare(`INSERT INTO stints (product_id, step, member_id, role, started_at, budget_hours, start_reason, by_id)
@@ -579,7 +577,6 @@ route('GET', '/api/products/:id', async ({ db, me, params, settings }) => {
     open: open ? { ...open, color: stintColor(open, hoursMap.get(open.id), activeOpt, t, cfg, settings), visit_held: hoursMap.get(open.id)?.visit_held ?? 0 } : null,
     attribution: attributionFor(id, stints.results, hoursMap),
     breakdown: lastOpt ? deadlineBreakdown(lastOpt, stints.results, hoursMap, t) : null,
-    undo_left_ms: p.undo_until && p.undo_until > t && p.step === 'live' ? p.undo_until - t : 0,
     now: t,
   });
 });
@@ -609,14 +606,7 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params, sett
       const raws = await photosOf(['raw']);
       if (!raws.length) throw new HttpError(400, '請至少上傳 1 張原圖');
       if (raws.some((r) => !(r.chk_accurate && r.chk_clear && r.chk_ratio))) throw new HttpError(400, '每張原圖都要勾滿三項');
-      stmts = transition(db, p, open, me, { endReason: 'complete', next: nextFor('edit', p, settings), action: 'raw_done' });
-      break;
-    }
-    case 'complete_edit': {
-      mustHold('edit');
-      const imgs = await photosOf(['cutout', 'mood']);
-      if (!imgs.some((i) => i.kind === 'cutout') || !imgs.some((i) => i.kind === 'mood')) throw new HttpError(400, '去背圖和意象圖各至少 1 張');
-      stmts = transition(db, p, open, me, { endReason: 'complete', next: nextFor('listing', p, settings), action: 'edit_done' });
+      stmts = transition(db, p, open, me, { endReason: 'complete', next: nextFor('listing', p, settings), action: 'raw_done' });
       break;
     }
     case 'save_listing':
@@ -637,16 +627,19 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params, sett
         ]);
         return json({ ok: true });
       }
-      const missing = [['sl_name', '名稱'], ['sl_body', '內文'], ['sl_price', '價格'], ['sl_url', 'Shopline 連結']].filter(([k]) => !f[k]).map(([, l]) => l);
+      const missing = [['sl_name', '名稱'], ['sl_body', '文案'], ['sl_price', '價格'], ['sl_url', 'Shopline 網址']].filter(([k]) => !f[k]).map(([, l]) => l);
       if (missing.length) throw new HttpError(400, `請填寫：${missing.join('、')}`);
-      if (!/^https?:\/\//.test(f.sl_url)) throw new HttpError(400, 'Shopline 連結需以 http 開頭');
-      stmts = transition(db, p, open, me, { endReason: 'complete', next: nextFor('review', p, settings), updates: f, action: 'listing_done' });
+      if (!/^https?:\/\//.test(f.sl_url)) throw new HttpError(400, 'Shopline 網址需以 http 開頭');
+      stmts = transition(db, p, open, me, {
+        endReason: 'complete', next: nextFor('review', p, settings),
+        updates: { ...f, published_at: p.published_at ?? now() }, action: 'listing_done',
+      });
       break;
     }
     case 'review_pass': {
       mustHold('review');
       if (!(b.checks?.copy && b.checks?.price && b.checks?.photo)) throw new HttpError(400, '文案、價格、照片三項都要勾');
-      stmts = transition(db, p, open, me, { endReason: 'pass', next: nextFor('publish', p, settings), action: 'review_pass' });
+      stmts = transition(db, p, open, me, { endReason: 'pass', next: { step: 'assign' }, action: 'review_pass' });
       break;
     }
     case 'review_return': {
@@ -655,32 +648,12 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params, sett
       const note = String(b.note ?? '').trim();
       if (!reasons.length) throw new HttpError(400, '請選擇退回原因');
       if (!note) throw new HttpError(400, '請寫要改什麼');
-      // 多選時退到流程最前面那關
-      const target = reasons.includes('photo') ? 'edit' : 'listing';
+      // 照片 → 原圖（選品）；文案／價格 → 上架；多選退到最前面那關
+      const target = reasons.includes('photo') ? 'raw' : 'listing';
       stmts = transition(db, p, open, me, {
         endReason: 'return', next: nextFor(target, p, settings, { start_reason: 'return', reasons, note }),
-        action: 'review_return', detail: note.slice(0, 80),
+        action: 'review_return', detail: `${reasons.map((r) => REASON_LABEL[r]).join('、')}：${note.slice(0, 60)}`,
       });
-      break;
-    }
-    case 'publish': {
-      mustHold('publish');
-      const t = now();
-      stmts = transition(db, p, open, me, {
-        endReason: 'publish', next: { step: 'live' },
-        updates: { published_at: t, undo_until: t + UNDO_MS, undo_by: me.id }, action: 'publish',
-      });
-      break;
-    }
-    case 'undo_publish': {
-      if (p.step !== 'live' || !p.undo_until || now() > p.undo_until) throw new HttpError(400, '已超過 30 秒，無法撤銷');
-      if (p.undo_by !== me.id) throw new HttpError(403, '只有發布的人可以撤銷');
-      const last = await db.prepare("SELECT id FROM stints WHERE product_id = ? AND step = 'publish' ORDER BY id DESC LIMIT 1").bind(id).first();
-      stmts = [
-        db.prepare('UPDATE stints SET ended_at = NULL, end_reason = NULL WHERE id = ?').bind(last.id),
-        db.prepare("UPDATE products SET step = 'publish', published_at = NULL, undo_until = NULL, undo_by = NULL, version = version + 1, updated_at = ? WHERE id = ?").bind(now(), id),
-        log(db, me.id, 'publish_undo', id),
-      ];
       break;
     }
     case 'submit_opt': {
@@ -689,37 +662,37 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params, sett
       if (!note) throw new HttpError(400, '請填寫改了什麼');
       const opt = await activeOptimization(db, id);
       const rush = isRushNow(opt, now(), cfgOf(settings), settings);
-      const budget = rush ? settings.rush_review_hours : budgetFor('opt_review', settings);
       stmts = transition(db, p, open, me, {
         endReason: 'submit', endNote: note,
-        next: { ...nextFor('opt_review', p, settings), budget, start_reason: 'submit', optimization_id: opt.id },
+        next: { ...nextFor('final_review', p, settings), budget: rush ? settings.rush_review_hours : settings.final_review_hours, start_reason: 'submit', optimization_id: opt.id },
         action: 'opt_submit', detail: note.slice(0, 80),
       });
       stmts.push(db.prepare("UPDATE optimizations SET status = 'review' WHERE id = ?").bind(opt.id));
       break;
     }
-    case 'opt_pass': {
-      mustHold('opt_review');
+    case 'final_pass': {
+      mustHold('final_review');
       if (!(b.checks?.copy && b.checks?.price && b.checks?.photo)) throw new HttpError(400, '文案、價格、照片三項都要勾');
       const opt = await activeOptimization(db, id);
       stmts = transition(db, p, open, me, {
-        endReason: 'pass', next: { step: 'live' }, updates: { opt_version: p.opt_version + 1 }, action: 'opt_pass',
+        endReason: 'pass', next: { step: 'done' }, updates: { opt_version: p.opt_version + 1 }, action: 'final_pass',
         detail: `第 ${p.opt_version + 1} 版`,
       });
       stmts.push(db.prepare("UPDATE optimizations SET status = 'passed', passed_at = ? WHERE id = ?").bind(now(), opt.id));
       break;
     }
-    case 'opt_return': {
-      mustHold('opt_review');
+    case 'final_return': {
+      mustHold('final_review');
       const reasons = [...new Set((b.reasons || []).filter((r) => REASONS.includes(r)))];
       const note = String(b.note ?? '').trim();
       if (!reasons.length) throw new HttpError(400, '請選擇退回原因');
       if (!note) throw new HttpError(400, '請寫要改什麼');
       const opt = await activeOptimization(db, id);
+      const firstOpt = await db.prepare("SELECT budget_hours FROM stints WHERE optimization_id = ? AND step = 'optimizing' ORDER BY id LIMIT 1").bind(opt.id).first();
       stmts = transition(db, p, open, me, {
         endReason: 'return',
-        next: { step: 'optimizing', member_id: opt.optimizer_id, role: opt.kind === 'premium' ? 'external' : 'editor', budget: null, start_reason: 'return', reasons, note, optimization_id: opt.id },
-        action: 'opt_return', detail: note.slice(0, 80),
+        next: { step: 'optimizing', member_id: opt.optimizer_id, role: opt.kind === 'premium' ? 'external' : 'editor', budget: firstOpt?.budget_hours ?? null, start_reason: 'return', reasons, note, optimization_id: opt.id },
+        action: 'final_return', detail: `${reasons.map((r) => REASON_LABEL[r]).join('、')}：${note.slice(0, 60)}`,
       });
       stmts.push(db.prepare("UPDATE optimizations SET status = 'working', rounds = rounds + 1 WHERE id = ?").bind(opt.id));
       break;
@@ -754,12 +727,12 @@ route('POST', '/api/optimizations', async ({ db, request, me, settings }) => {
   let done = 0;
   for (const pid of ids) {
     const p = await db.prepare('SELECT * FROM products WHERE id = ? AND deleted_at IS NULL').bind(pid).first();
-    if (!p || p.step !== 'live') { skipped.push(p?.name ?? `#${pid}`); continue; }
+    if (!p || !['assign', 'done'].includes(p.step)) { skipped.push(p?.name ?? `#${pid}`); continue; }
     const res = await db.prepare(`INSERT INTO optimizations (product_id, kind, optimizer_id, deadline, assigned_by, assigned_at, status)
       VALUES (?, ?, ?, ?, ?, ?, 'working')`).bind(pid, kind, optimizerId, deadline, me.id, t).run();
     await db.batch(transition(db, p, null, me, {
-      next: { step: 'optimizing', member_id: optimizerId, role, budget: null, start_reason: 'assign', optimization_id: res.meta.last_row_id },
-      updates: { undo_until: null }, action: 'opt_assign', detail: `${kind === 'premium' ? '精製' : '一般'}・截止 ${b.date} ${hour}:00`,
+      next: { step: 'optimizing', member_id: optimizerId, role, budget: optimizerBudget(t, deadline, cfg, settings), start_reason: 'assign', optimization_id: res.meta.last_row_id },
+      action: 'opt_assign', detail: `${kind === 'premium' ? '精製' : '一般'}・截止 ${b.date} ${hour}:00`,
     }));
     done++;
   }
@@ -801,7 +774,7 @@ route('PATCH', '/api/products/:id/owners', async ({ db, request, me, params }) =
   const b = await body(request);
   await checkVersion(db, p, b.version);
   const updates = {};
-  for (const [field, role] of [['picker_id', 'picker'], ['editor_id', 'editor'], ['lister_id', 'lister'], ['reviewer_id', 'reviewer']]) {
+  for (const [field, role] of [['picker_id', 'picker'], ['lister_id', 'lister'], ['reviewer_id', 'reviewer']]) {
     if (b[field] !== undefined) updates[field] = await validOwner(db, b[field], role);
   }
   const open = await openStint(db, id);
@@ -835,7 +808,7 @@ route('PATCH', '/api/products/:id/owners', async ({ db, request, me, params }) =
 
 // ---------- 照片 ----------
 
-const PHOTO_STEP = { raw: 'raw', cutout: 'edit', mood: 'edit', opt: 'optimizing' };
+const PHOTO_STEP = { raw: 'raw', opt: 'optimizing' };
 
 route('POST', '/api/products/:id/photos', async ({ db, env, request, me, params }) => {
   requireMe(me);
@@ -953,31 +926,27 @@ route('POST', '/api/mentions/:id/ack', async ({ db, me, params }) => {
   return json({ ok: true });
 });
 
-// ---------- 整批進度 ----------
+// ---------- 全覽（首頁） ----------
 
-route('GET', '/api/batches', async ({ db, me, settings }) => {
+route('GET', '/api/overview', async ({ db, me, url, settings }) => {
   requireInternal(me);
   const d = await loadAll(db);
   const t = now();
-  const hoursMap = computeStintHours(d.stints, d.optimizations, t, cfgOf(settings));
+  const cfg = cfgOf(settings);
+  const hoursMap = computeStintHours(d.stints, d.optimizations, t, cfg);
   const { results: batches } = await db.prepare('SELECT id, name, created_at FROM batches ORDER BY id DESC').all();
-  const openBy = new Map(d.stints.filter((s) => s.ended_at == null).map((s) => [s.product_id, s]));
-  return json(batches.map((bt) => {
-    const ps = d.products.filter((p) => p.batch_id === bt.id);
-    const counts = {};
-    for (const p of ps) counts[p.step] = (counts[p.step] || 0) + 1;
-    const listed = ps.filter((p) => ['live', 'optimizing', 'opt_review'].includes(p.step)).length;
-    let slowest = null;
-    for (const p of ps) {
-      if (['live', 'optimizing', 'opt_review'].includes(p.step)) continue;
-      const s = openBy.get(p.id);
-      if (!s) continue;
-      const h = hoursMap.get(s.id);
-      const held = h?.visit_held ?? h?.held ?? 0;
-      if (!slowest || held > slowest.held_h) slowest = { product_id: p.id, name: p.name, step: p.step, holder_id: s.member_id, held_h: Math.round(held * 10) / 10 };
-    }
-    return { ...bt, total: ps.length, counts, listed, listed_pct: ps.length ? Math.round((listed / ps.length) * 100) : 0, slowest };
-  }).filter((b) => b.total > 0));
+  const counts = {};
+  for (const p of d.products) {
+    const c = (counts[p.batch_id] ||= { total: 0, done: 0 });
+    c.total++;
+    if (p.step === 'done') c.done++;
+  }
+  const batchList = batches.filter((b) => counts[b.id]).map((b) => ({ ...b, ...counts[b.id] }));
+  const want = Number(url.searchParams.get('batch'));
+  const batchId = want === 0 && url.searchParams.has('batch') ? 0 : (batchList.find((b) => b.id === want)?.id ?? batchList.find((b) => b.done < b.total)?.id ?? batchList[0]?.id ?? 0);
+  const products = batchId ? d.products.filter((p) => p.batch_id === batchId) : d.products;
+  const rows = overviewRows({ products, stints: d.stints, optimizations: d.optimizations, hoursMap, now: t, cfg, settings });
+  return json({ batches: batchList, batch_id: batchId, rows, now: t });
 });
 
 // ---------- 延誤分析 ----------
@@ -995,11 +964,10 @@ route('GET', '/api/analysis', async ({ db, me, url, settings }) => {
   const since = days ? t - days * 86400000 : 0;
   const filter = (s) => (s.ended_at == null || s.ended_at >= since) && (!batch || batchOf.get(s.product_id) === batch);
   filter.scope = scope;
-  const { u } = await db.prepare(`SELECT COUNT(*) AS u FROM activity WHERE action = 'publish_undo' AND at >= ?`).bind(since).first();
   const optFiltered = d.optimizations.filter((o) => (!batch || batchOf.get(o.product_id) === batch) && (o.passed_at == null || o.passed_at >= since));
   return json({
     ranking: ranking({ stints: d.stints, optimizations: d.optimizations, hoursMap, roleMembers: d.roleMembers, settings, now: t, cfg, filter }),
-    metrics: metrics({ stints: d.stints, optimizations: optFiltered, comments: d.comments, undoCount: u, hoursMap, now: t, cfg, filter }),
+    metrics: metrics({ stints: d.stints, optimizations: optFiltered, comments: d.comments, hoursMap, now: t, cfg, filter }),
   });
 });
 

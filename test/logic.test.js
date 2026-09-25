@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { workHoursBetween, addWorkHours, localToEpoch } from '../src/worktime.js';
-import { computeStintHours, buildRadar, diagnose, wasRush, metrics } from '../src/analytics.js';
+import { computeStintHours, buildRadar, diagnose, wasRush, metrics, optimizerBudget, returnEvents, overviewRows } from '../src/analytics.js';
 
 const cfg = { days: [1, 2, 3, 4, 5], start: 9, end: 18, holidays: ['2026-10-09'], tz: 480 };
-const settings = { rush_threshold_hours: 18, capacity_ratio: 1.5 };
+const settings = { rush_threshold_hours: 18, capacity_ratio: 1.5, rush_review_hours: 2, final_review_hours: 9 };
 const at = (ymd, h, m = 0) => localToEpoch(ymd, h, cfg) + m * 60000;
 // 2026-09-28 是週一
 const MON = '2026-09-28', TUE = '2026-09-29', WED = '2026-09-30', FRI = '2026-10-02', SAT = '2026-10-03', NEXTMON = '2026-10-05';
@@ -40,20 +40,50 @@ test('一般步驟：超出預算的部分算給當時拿著的人（含改派�
   assert.deepEqual([h.get(2).held, h.get(2).over], [6, 3]); // 累計 15h，預算 12h
 });
 
-test('優化者只看截止時間；審核超時延後優化者的有效截止', () => {
+test('優化者標準時間 = 指定到截止 − 審查時間；審查拖延不算優化者的', () => {
+  // 規格例子：週一 17:00 指定、週二 15:00 截止 → 7h，急件審查 2h → 優化者 5h
+  const budget = optimizerBudget(at(MON, 17), at(TUE, 15), cfg, settings);
+  assert.equal(budget, 5);
   const opt = { id: 5, product_id: 1, deadline: at(TUE, 15), assigned_at: at(MON, 17), status: 'working' };
   const stints = [
-    // 優化者週一 17:00 → 週二 12:00 交件（截止前，正常）
-    { id: 1, product_id: 1, optimization_id: 5, step: 'optimizing', member_id: 20, role: 'editor', started_at: at(MON, 17), ended_at: at(TUE, 12), budget_hours: null, start_reason: 'assign' },
-    // 審核急件預算 2h，實際 12:00 → 周三 10:00 = 7h，超時 5h，退回
-    { id: 2, product_id: 1, optimization_id: 5, step: 'opt_review', member_id: 30, role: 'reviewer', started_at: at(TUE, 12), ended_at: at(WED, 10), budget_hours: 2, start_reason: 'submit', end_reason: 'return' },
-    // 優化者重改 周三 10:00 → 14:00。原截止已過，但有效截止 = 截止 + 5h = 周三 11:00 → 超出 3h
-    { id: 3, product_id: 1, optimization_id: 5, step: 'optimizing', member_id: 20, role: 'editor', started_at: at(WED, 10), ended_at: at(WED, 14), budget_hours: null, start_reason: 'return' },
+    { id: 1, product_id: 1, optimization_id: 5, step: 'optimizing', member_id: 20, role: 'editor', started_at: at(MON, 17), ended_at: at(TUE, 12), budget_hours: budget, start_reason: 'assign' },
+    // 審查 2h 標準，拖到週三 10:00 = 7h，超出 5h（算審查的人）
+    { id: 2, product_id: 1, optimization_id: 5, step: 'final_review', member_id: 30, role: 'reviewer', started_at: at(TUE, 12), ended_at: at(WED, 10), budget_hours: 2, start_reason: 'submit', end_reason: 'return' },
+    // 優化者重改 4h：累計 4 + 4 = 8h，超出自己的 5h 標準 3h
+    { id: 3, product_id: 1, optimization_id: 5, step: 'optimizing', member_id: 20, role: 'editor', started_at: at(WED, 10), ended_at: at(WED, 14), budget_hours: budget, start_reason: 'return' },
   ];
   const h = computeStintHours(stints, [opt], at(WED, 14), cfg);
   assert.equal(h.get(1).over, 0);
   assert.equal(h.get(2).over, 5);
   assert.equal(h.get(3).over, 3);
+});
+
+test('被退件依原因算到做那部分的人（上架人員的文案錯也算）', () => {
+  const stints = [
+    { id: 1, product_id: 1, step: 'raw', member_id: 2, started_at: at(MON, 9), ended_at: at(MON, 10) },
+    { id: 2, product_id: 1, step: 'listing', member_id: 8, started_at: at(MON, 10), ended_at: at(MON, 12) },
+    { id: 3, product_id: 1, step: 'review', member_id: 11, started_at: at(MON, 12), ended_at: at(MON, 13), end_reason: 'return' },
+    { id: 4, product_id: 1, step: 'raw', member_id: 2, started_at: at(MON, 13), ended_at: null, start_reason: 'return', reasons: '["photo","copy"]', by_id: 11 },
+  ];
+  const ev = returnEvents(stints);
+  assert.deepEqual(ev.map((e) => [e.member_id, e.reasons]).sort(), [[2, ['photo']], [8, ['copy']]]);
+});
+
+test('全覽：只算自己拿到工作後的時間，已完成步驟計入領先／落後', () => {
+  const now = at(TUE, 12);
+  const products = [{ id: 1, name: 'A', batch_id: 1, step: 'review', picker_id: 2, lister_id: 8, reviewer_id: 11, updated_at: now }];
+  const stints = [
+    { id: 1, product_id: 1, step: 'raw', member_id: 2, started_at: at(MON, 9), ended_at: at(MON, 13), budget_hours: 9, start_reason: 'create' },
+    { id: 2, product_id: 1, step: 'listing', member_id: 8, started_at: at(MON, 13), ended_at: at(TUE, 10), budget_hours: 9, start_reason: 'advance' },
+    { id: 3, product_id: 1, step: 'review', member_id: 11, started_at: at(TUE, 10), ended_at: null, budget_hours: 9, start_reason: 'advance' },
+  ];
+  const hoursMap = computeStintHours(stints, [], now, cfg);
+  const [row] = overviewRows({ products, stints, optimizations: [], hoursMap, now, cfg, settings });
+  const cell = (st) => row.cells.find((c) => c.step === st);
+  assert.equal(cell('raw').variance, 5); // 標準 9h，用了 4h → 領先 5h
+  assert.equal(cell('listing').variance, 3); // 用了 6h（13–18 點 + 隔天 9–10 點）→ 領先 3h
+  assert.equal(cell('review').variance, 0); // 進行中且未超時，不提前算領先
+  assert.equal(row.variance, 8);
 });
 
 test('雷達排序：急件 → 被退回 → 紅 → 黃 → 等我處理', () => {
