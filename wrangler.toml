@@ -1,4 +1,4 @@
-name = "product-listing-flow"
+name = "product-listing-process"
 main = "src/worker.js"
 compatibility_date = "2025-09-01"
 
