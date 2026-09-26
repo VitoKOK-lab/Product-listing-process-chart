@@ -1158,11 +1158,11 @@ async function viewProduct(idStr) {
   const nextId = S.radarKeys[S.radarKeys.indexOf(id) + 1] || (S.radarKeys[0] !== id ? S.radarKeys[0] : null);
   if (staff()) {
     // 員工：只有工作卡片（行銷多一個插隊）
-    $app.innerHTML = `
+    $app.innerHTML = `<div class="staff-page">
       <div class="page-head"><a href="#/radar" class="btn small">← 今天要做</a></div>
       <div class="staff-title">${thumb(p.id, p.thumb_ver, 'md')}<h1>${esc(p.name)}</h1></div>
       <div id="action">${actionPanel(p)}</div>
-      ${isMkt() ? rushBlock(p) : ''}`;
+      ${isMkt() ? rushBlock(p) : ''}</div>`;
     return bindProduct(p);
   }
   $app.innerHTML = `

@@ -1071,3 +1071,27 @@ details.hint .guide ul { margin: 0; padding-left: 18px; line-height: 1.8; }
   .scard .thumb { width: 48px; height: 48px; }
   .scard .btn { min-height: 42px; }
 }
+
+/* 員工版：電腦 */
+#me { margin-left: auto; }
+.staff-home { max-width: 1200px; }
+.staff-home .page-head h1 { font-size: 22px; }
+.slist { display: grid; grid-template-columns: repeat(auto-fill, minmax(460px, 1fr)); gap: 14px; }
+.scard { grid-template-columns: 72px 1fr auto; padding: 16px 18px; gap: 16px; }
+.scard .thumb { width: 72px; height: 72px; }
+.scard .sc-name { font-size: 17px; }
+.scard .btn { min-height: 44px; padding: 0 22px; font-size: 15px; }
+.sh { font-size: 16px; margin: 22px 0 10px; }
+.staff-page { max-width: 880px; margin: 0 auto; }
+.staff-page .staff-title h1 { font-size: 24px; }
+.staff-page .action { padding: 22px 26px; }
+.staff-page .action h2 { font-size: 19px; }
+.staff-page .field input, .staff-page .field textarea { font-size: 15px; }
+@media (max-width: 760px) {
+  .slist { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .scard { grid-template-columns: 48px 1fr auto; padding: 10px 12px; gap: 12px; }
+  .scard .thumb { width: 48px; height: 48px; }
+  .scard .sc-name { font-size: 16px; }
+  .scard .btn { padding: 0 16px; }
+  .staff-page .action { padding: 14px; }
+}
