@@ -1031,3 +1031,10 @@ ol.sop-list { margin: 0; padding-left: 22px; display: grid; grid-template-column
   .hf-pair .hf-box { flex: 1; }
   .hf-pair small { flex-basis: 100%; text-align: center; }
 }
+
+/* 管理員切換視角 */
+#viewas { position: sticky; top: 0; z-index: 40; background: linear-gradient(90deg, #7C5CC4, #C23D82); color: #fff; text-align: center; padding: 8px 12px; font-size: 14px; display: flex; gap: 12px; justify-content: center; align-items: center; flex-wrap: wrap; }
+#viewas[hidden] { display: none; }
+#viewas .btn { background: #fff; color: var(--ink); }
+#viewas-pick { width: auto; max-width: 180px; padding: 4px 8px; font-size: 13px; border-radius: 999px; }
+body:has(#viewas:not([hidden])) .act, body:has(#viewas:not([hidden])) #claim-btn, body:has(#viewas:not([hidden])) [data-claim] { opacity: .45; pointer-events: none; }

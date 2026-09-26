@@ -194,6 +194,20 @@ async function currentMember(db, request) {
   return m;
 }
 
+// 管理員切換成其他人的視角：只能看，不能操作
+async function viewAs(db, request, me) {
+  const want = Number(request.headers.get('x-view-as'));
+  if (!me?.is_admin || !Number.isInteger(want) || want <= 0 || want === me.id) return me;
+  if (request.method !== 'GET') throw new HttpError(403, '切換視角時只能看、不能操作，請先回到管理員');
+  const m = await db.prepare('SELECT id, name, color, is_admin FROM members WHERE id = ? AND active = 1').bind(want).first();
+  if (!m) return me;
+  m.roles = await memberRoles(db, m.id);
+  m.viewing_as = true;
+  m.real_id = me.id;
+  m.real_name = me.name;
+  return m;
+}
+
 const requireMe = (me) => { if (!me) throw new HttpError(401, '請先選擇你的名字登入'); return me; };
 const requireAdmin = (me) => { requireMe(me); if (!me.is_admin) throw new HttpError(403, '只有管理員可以執行這個操作'); return me; };
 const hasRole = (me, role) => me.roles.includes(role);
@@ -1072,7 +1086,8 @@ export default {
       await ensureSchema(db);
       const m = url.pathname.match(r.re);
       const params = Object.fromEntries(r.keys.map((k, i) => [k, decodeURIComponent(m[i + 1])]));
-      const [me, settings] = await Promise.all([currentMember(db, request), loadSettings(db)]);
+      let [me, settings] = await Promise.all([currentMember(db, request), loadSettings(db)]);
+      me = await viewAs(db, request, me);
       return await r.handler({ db, env, request, url, params, me, settings });
     } catch (e) {
       if (e instanceof HttpError) return json({ error: e.message, ...(e.extra || {}) }, e.status);

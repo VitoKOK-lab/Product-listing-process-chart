@@ -25,6 +25,7 @@ const GROUPS = [
 ];
 
 const S = {
+  viewAs: (() => { try { return Number(sessionStorage.getItem('viewAs')) || null; } catch { return null; } })(),
   me: null, members: [], settings: null, roles: {}, stepLabel: {}, stepRole: {},
   version: null, busy: 0, radarScope: 'me', radarKeys: [], radarScroll: 0, handled: null,
   lastLoad: null, offline: false, fails: 0, ovFilter: 'all', ovSort: 'priority', ovDoneAll: false, ana: { days: 30 },
@@ -107,6 +108,7 @@ function setOffline(on) {
 
 async function api(method, path, data) {
   const opt = { method, headers: {}, credentials: 'same-origin' };
+  if (S.viewAs) opt.headers['x-view-as'] = String(S.viewAs);
   if (data instanceof FormData) opt.body = data;
   else if (data !== undefined) { opt.body = JSON.stringify(data); opt.headers['content-type'] = 'application/json'; }
   let res;
@@ -197,10 +199,34 @@ async function boot() {
   if (!S.me) return renderLogin();
   document.getElementById('topbar').hidden = false;
   renderNav();
-  document.getElementById('me').innerHTML = `${avatar(S.me)}<span>${esc(S.me.name)}</span><span class="roles">${esc(rolesText(S.me) || (S.me.is_admin ? '管理員' : ''))}</span>`;
+  renderMe();
   S.version = (await api('GET', '/api/version')).v;
   if (!location.hash) location.hash = '#/overview';
   await render();
+}
+
+// 右上角：自己的名字；管理員可以切換成其他人的視角（只能看）
+function renderMe() {
+  const el = document.getElementById('me');
+  const bar = document.getElementById('viewas');
+  const canSwitch = S.me.is_admin || S.me.viewing_as;
+  const others = S.members.filter((m) => m.active);
+  el.innerHTML = `${avatar(S.me)}<span>${esc(S.me.name)}</span><span class="roles">${esc(rolesText(S.me) || (S.me.is_admin ? '管理員' : ''))}</span>
+    ${canSwitch ? `<select id="viewas-pick" title="切換成其他人的視角"><option value="">切換視角…</option>${others.map((m) => `<option value="${m.id}" ${m.id === S.me.id && S.me.viewing_as ? 'selected' : ''}>${esc(m.name)}${m.roles.length ? `（${esc(rolesText(m))}）` : ''}</option>`).join('')}</select>` : ''}`;
+  bar.hidden = !S.me.viewing_as;
+  if (S.me.viewing_as) {
+    bar.innerHTML = `正在用 <b>${esc(S.me.name)}</b> 的視角看（只能看，不能操作）<button class="btn small" id="viewas-exit">回到 ${esc(S.me.real_name)}</button>`;
+    document.getElementById('viewas-exit').onclick = () => setViewAs(null);
+  }
+  const pick = document.getElementById('viewas-pick');
+  if (pick) pick.onchange = () => setViewAs(Number(pick.value) || null);
+}
+
+function setViewAs(id) {
+  S.viewAs = id && id !== (S.me.real_id ?? S.me.id) ? id : null;
+  try { if (S.viewAs) sessionStorage.setItem('viewAs', String(S.viewAs)); else sessionStorage.removeItem('viewAs'); } catch { /* 無痕模式 */ }
+  location.hash = '#/overview';
+  boot();
 }
 
 function renderNav() {
