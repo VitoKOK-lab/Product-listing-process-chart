@@ -5,9 +5,11 @@ import {
   STEP_LABEL, STEP_ROLE, FLOW, stintHours, overviewRows, buildRadar, attributionFor, ranking, metrics,
   rushInfo, compare, teamAverages, stepTimes, currentReturn,
 } from './analytics.js';
-import { sheetRows, planSync, extractOgImage } from './sheet.js';
+import { sheetRows, planSync, extractOgImage, normalizeLink, sheetKey } from './sheet.js';
 
 const SCHEMA_VERSION = '3';
+// 在 v3 之後加上的欄位：舊資料庫補上
+const ADDED_COLUMNS = { products: [['sheet_row', 'INTEGER'], ['rename_pending', 'INTEGER NOT NULL DEFAULT 0']] };
 
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS members (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, color TEXT NOT NULL,
@@ -21,7 +23,8 @@ const TABLES = [
     sheet_key TEXT UNIQUE, source TEXT NOT NULL DEFAULT 'sheet', sheet_status TEXT NOT NULL DEFAULT '', status_code TEXT NOT NULL DEFAULT '',
     step TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1, marketer_id INTEGER, sl_url TEXT NOT NULL DEFAULT '',
     rush_date TEXT, return_to TEXT, thumb_src TEXT, thumb_ver INTEGER NOT NULL DEFAULT 0, thumb_checked_at INTEGER, thumb_error TEXT,
-    delisted_at INTEGER, done_at INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, deleted_at INTEGER)`,
+    delisted_at INTEGER, done_at INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, deleted_at INTEGER,
+    sheet_row INTEGER, rename_pending INTEGER NOT NULL DEFAULT 0)`,
   `CREATE TABLE IF NOT EXISTS photos (id INTEGER PRIMARY KEY AUTOINCREMENT, product_id INTEGER NOT NULL, kind TEXT NOT NULL,
     r2_key TEXT NOT NULL, filename TEXT NOT NULL DEFAULT '', content_type TEXT NOT NULL DEFAULT 'image/jpeg',
     uploaded_by INTEGER, created_at INTEGER NOT NULL, deleted_at INTEGER)`,
@@ -82,6 +85,13 @@ async function ensureSchema(db) {
       ...TABLES.map((sql) => db.prepare(sql)),
       db.prepare("INSERT INTO settings (key, value) VALUES ('schema_v', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(SCHEMA_VERSION),
     ]);
+  }
+  for (const [table, cols] of Object.entries(ADDED_COLUMNS)) {
+    const { results } = await db.prepare(`PRAGMA table_info(${table})`).all();
+    const have = new Set(results.map((c) => c.name));
+    for (const [name, type] of cols) {
+      if (!have.has(name)) await db.prepare(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`).run().catch(() => {});
+    }
   }
   const { n } = await db.prepare('SELECT COUNT(*) AS n FROM members').first();
   if (n === 0) await seedMembers(db);
@@ -548,7 +558,8 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params }) =>
   };
   const photoCount = async (kind) => (await db.prepare('SELECT COUNT(*) AS n FROM photos WHERE product_id = ? AND kind = ? AND deleted_at IS NULL').bind(id, kind).first()).n;
   const forward = async (endReason, extra = {}) => {
-    const to = p.return_to === 'mkt_check' && p.step !== 'mkt_check' ? 'mkt_check' : NEXT[p.step];
+    // 被後面的人退回、改好了：直接交回退回的那一步
+    const to = p.return_to && p.return_to !== p.step ? p.return_to : NEXT[p.step];
     const member = to === 'done' ? null : await holderFor(db, p, to);
     return transition(db, p, open, me, {
       endReason, to, member, updates: { return_to: null, ...(extra.updates || {}) }, endNote: extra.endNote,
@@ -581,7 +592,26 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params }) =>
       if (p.step === 'listing') {
         const slUrl = String(b.sl_url ?? '').trim().slice(0, 500);
         if (!/^https?:\/\//.test(slUrl)) throw new HttpError(400, '請貼上 Shopline 商品網址（http 開頭）');
-        stmts = await forward('complete', { updates: { sl_url: slUrl } });
+        const updates = { sl_url: slUrl };
+        const extra = [];
+        if (p.rename_pending) {
+          // 名稱改了、網址跟著變：換成新網址，下次同步對得上試算表的新網址；舊網址那列寫「已更名失效」
+          if (normalizeLink(slUrl) === normalizeLink(p.link)) throw new HttpError(400, '名稱改了網址也會變，請貼上改名後的新網址');
+          Object.assign(updates, { link: slUrl, rename_pending: 0, thumb_checked_at: null });
+          if (p.source === 'sheet') {
+            const key = sheetKey(p.name, slUrl);
+            const dup = await db.prepare('SELECT id, step FROM products WHERE sheet_key = ? AND id != ? AND deleted_at IS NULL').bind(key, id).first();
+            if (dup) {
+              const pics = await db.prepare('SELECT COUNT(*) AS n FROM photos WHERE product_id = ? AND deleted_at IS NULL').bind(dup.id).first();
+              if (dup.step !== 'open' || pics.n) throw new HttpError(409, '這個新網址在系統裡已經是另一件商品，而且已經開始作業，請找管理員處理');
+              // 先同步進來的新網址那一件還沒開始，併到這一件
+              extra.push(db.prepare('UPDATE products SET sheet_key = NULL, deleted_at = ?, version = version + 1 WHERE id = ?').bind(now(), dup.id));
+              extra.push(db.prepare("UPDATE stints SET ended_at = ?, end_reason = 'merged' WHERE product_id = ? AND ended_at IS NULL").bind(now(), dup.id));
+            }
+            updates.sheet_key = key;
+          }
+        }
+        stmts = [...extra, ...(await forward('complete', { updates, detail: p.rename_pending ? '已換新網址' : '' }))];
         break;
       }
       if (p.step === 'optimizing') {
@@ -598,19 +628,27 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params }) =>
       const note = String(b.note ?? '').trim().slice(0, 2000);
       if (!note) throw new HttpError(400, '請寫出哪裡有問題');
       let to;
+      let label = '';
+      const updates = {};
       if (p.step === 'mkt_check') {
         to = ['open', 'cutout', 'listing', 'optimizing'].includes(b.target) ? b.target : null;
         if (!to || to === 'open') throw new HttpError(400, '請選要退回哪一步');
+      } else if (p.step === 'optimizing') {
+        // 設計師：文案 → 上架人員；去背圖 → 美編。改好直接交回設計師
+        to = { listing: 'listing', cutout: 'cutout' }[b.target];
+        if (!to) throw new HttpError(400, '請選退回原因：文案或去背圖');
+        label = to === 'listing' ? (b.rename ? '文案・名稱要改' : '文案') : '去背圖';
+        if (to === 'listing' && b.rename) updates.rename_pending = 1;
       } else {
         to = PREV[p.step];
         if (!to) throw new HttpError(400, '開單沒有上一步可以退回');
       }
       const member = await holderFor(db, p, to);
       stmts = transition(db, p, open, me, {
-        endReason: 'return', to, member, startReason: 'return', note,
-        // 行銷檢查退回：改好直接交回行銷；中間關卡退回：照正常流程往下走
-        updates: { return_to: p.step === 'mkt_check' ? 'mkt_check' : null },
-        action: 'return', detail: `${STEP_LABEL[p.step]} → ${STEP_LABEL[to]}：${note.slice(0, 60)}`,
+        endReason: 'return', to, member, startReason: 'return', note: label ? `【${label}】${note}` : note,
+        // 行銷檢查、設計師退回：改好直接交回；中間關卡退回：照正常流程往下走
+        updates: { ...updates, return_to: ['mkt_check', 'optimizing'].includes(p.step) ? p.step : null },
+        action: 'return', detail: `${STEP_LABEL[p.step]} → ${STEP_LABEL[to]}：${label ? `【${label}】` : ''}${note.slice(0, 60)}`,
       });
       break;
     }
@@ -673,7 +711,7 @@ route('POST', '/api/sync/sheet', async ({ db, request, me, settings }) => {
   if (data.error) throw new HttpError(400, `試算表回覆：${String(data.error).slice(0, 100)}`);
   const rows = sheetRows(data.rows);
   if (!rows.length) throw new HttpError(400, '沒有讀到任何商品，請確認「銷售型-投廣素材」這一頁有資料');
-  const { results: existing } = await db.prepare('SELECT id, name, link, sheet_key, source, sheet_status, status_code, step, delisted_at, deleted_at FROM products WHERE sheet_key IS NOT NULL').all();
+  const { results: existing } = await db.prepare('SELECT id, name, link, sheet_key, source, sheet_status, status_code, sheet_row, step, delisted_at, deleted_at FROM products WHERE sheet_key IS NOT NULL').all();
   const plan = planSync(existing, rows);
   const liveSheet = existing.filter((p) => p.source === 'sheet' && !p.delisted_at && !p.deleted_at).length;
   // 防呆：一次要下架超過一半，多半是讀錯頁或資料被清空
@@ -683,14 +721,14 @@ route('POST', '/api/sync/sheet', async ({ db, request, me, settings }) => {
   const t = now();
   const stmts = [];
   for (const r of plan.inserts) {
-    stmts.push(db.prepare(`INSERT INTO products (name, link, sheet_key, source, sheet_status, status_code, step, created_at, updated_at)
-      VALUES (?, ?, ?, 'sheet', ?, ?, 'open', ?, ?)`).bind(r.name, r.link, r.key, r.status, r.code, t, t));
+    stmts.push(db.prepare(`INSERT INTO products (name, link, sheet_key, source, sheet_status, status_code, sheet_row, step, created_at, updated_at)
+      VALUES (?, ?, ?, 'sheet', ?, ?, ?, 'open', ?, ?)`).bind(r.name, r.link, r.key, r.status, r.code, r.row, t, t));
     stmts.push(db.prepare(`INSERT INTO stints (product_id, step, member_id, role, started_at, start_reason, by_id)
       SELECT id, 'open', NULL, 'marketing', ?, 'create', ? FROM products WHERE sheet_key = ?`).bind(t, me.id, r.key));
   }
   for (const u of plan.updates) {
-    stmts.push(db.prepare('UPDATE products SET name = ?, link = ?, sheet_status = ?, status_code = ?, updated_at = ?, version = version + 1 WHERE id = ?')
-      .bind(u.row.name, u.row.link, u.row.status, u.row.code, t, u.id));
+    stmts.push(db.prepare('UPDATE products SET name = ?, link = ?, sheet_status = ?, status_code = ?, sheet_row = ?, updated_at = ?, version = version + 1 WHERE id = ?')
+      .bind(u.row.name, u.row.link, u.row.status, u.row.code, u.row.row, t, u.id));
   }
   for (const pid of plan.delist) {
     stmts.push(db.prepare('UPDATE products SET delisted_at = ?, updated_at = ?, version = version + 1 WHERE id = ?').bind(t, t, pid));

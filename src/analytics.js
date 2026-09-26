@@ -10,7 +10,8 @@ export const STEP_ROLE = { open: 'marketing', cutout: 'editor', listing: 'lister
 export const MIN_SAMPLE = 3; // 同一步至少 3 件走完，才拿來比團隊平均
 
 // 這些開始原因代表「又輪到這一步一次」；認領、放回、改派、恢復只是同一輪換手
-const VISIT_START = new Set(['create', 'advance', 'return']);
+// import = 上線時整批推進的舊件，排隊時間不拿來算團隊平均
+const VISIT_START = new Set(['create', 'advance', 'return', 'import']);
 
 const round1 = (n) => Math.round(n * 10) / 10;
 const stepIdx = (s) => STEPS.indexOf(s);
@@ -27,7 +28,8 @@ export function stepTimes(stints, hours) {
   const sorted = [...stints].sort((a, b) => a.started_at - b.started_at || a.id - b.id);
   for (const s of sorted) {
     const byStep = out.get(s.product_id) || out.set(s.product_id, {}).get(s.product_id);
-    const e = (byStep[s.step] ||= { held: 0, pool: 0, rounds: 0, open: false, holders: [] });
+    const e = (byStep[s.step] ||= { held: 0, pool: 0, rounds: 0, open: false, holders: [], imported: false });
+    if (s.start_reason === 'import') e.imported = true;
     const h = hours.get(s.id) || 0;
     e.held += h;
     if (!s.member_id) e.pool += h;
@@ -47,7 +49,7 @@ export function teamAverages(products, times) {
     const pools = [];
     for (const p of products) {
       const e = times.get(p.id)?.[step];
-      if (!e || e.open || stepIdx(p.step) <= stepIdx(step)) continue;
+      if (!e || e.open || e.imported || stepIdx(p.step) <= stepIdx(step)) continue;
       vals.push(e.held);
       pools.push(e.pool);
     }
@@ -157,7 +159,7 @@ export function overviewRows({ products, allProducts, stints, now, cfg, settings
         cell.holder_id = open.member_id ?? null;
         cell.waiting = !open.member_id;
       }
-      if (e && state !== 'future') {
+      if (e && state !== 'future' && !e.imported) {
         const c = compare(held, cell.avg);
         // 進行中的步驟只在比平均慢時才算，不提前算快
         if (state === 'done' || (c.diff ?? 0) > 0) {
@@ -191,8 +193,9 @@ export function buildRadar({ products, allProducts, stints, mentions, me, meRole
     const p = prodById.get(s.product_id);
     const mine = s.member_id === me;
     const claimable = !s.member_id && meRoles.includes(s.role);
-    const held = round1(times.get(p.id)?.[s.step]?.held || 0);
-    const c = compare(held, avgs[s.step]?.avg);
+    const st = times.get(p.id)?.[s.step];
+    const held = round1(st?.held || 0);
+    const c = st?.imported ? { diff: null, level: 'ok' } : compare(held, avgs[s.step]?.avg);
     const rush = rushInfo(p, now, cfg, settings);
     if (scope === 'me' && !mine && !claimable) continue;
     if (scope === 'all' && !(c.level !== 'ok' || rush?.urgent || rush?.overdue)) continue;
@@ -212,11 +215,13 @@ export function buildRadar({ products, allProducts, stints, mentions, me, meRole
       if (group === 'mine') group = 'slow';
     }
     if (!s.member_id) tags.push({ t: '等人認領', k: 'wait' });
+    if (s.step === 'listing' && p.rename_pending) tags.push({ t: '名稱要改・網址會變', k: 'return' });
     items.set(`${s.product_id}:${s.id}`, {
       key: `${s.product_id}:${s.id}`, product_id: p.id, name: p.name, link: p.link || '', step: s.step, role: s.role,
       holder_id: s.member_id ?? null, claimable, started_at: s.started_at, held_h: held, avg_h: avgs[s.step]?.avg ?? null,
       level: c.level, group, tags, returned: r ? { note: r.note, by: r.by_id } : null, rush,
       status_code: p.status_code || '', rush_date: p.rush_date ?? null, thumb: p.thumb_ver || 0, version: p.version,
+      sheet_row: p.sheet_row ?? null,
     });
   }
 
@@ -243,8 +248,25 @@ export function buildRadar({ products, allProducts, stints, mentions, me, meRole
 
   const order = { rush: 0, attention: 1, slow: 2, mine: 3, pool: 4 };
   const list = [...items.values()].sort((a, b) => order[a.group] - order[b.group]
-    || comparePriority(a, b) || a.started_at - b.started_at);
+    || (b.returned ? 1 : 0) - (a.returned ? 1 : 0) || workOrder(a, b));
+  // 建議現在先做的那一件：排最前面、輪到我（或我能認領）的
+  const first = scope === 'me' && list.find((i) => i.holder_id === me || i.claimable);
+  if (first) first.suggest = true;
   return { items: list, stuck_count: list.filter((i) => ['rush', 'attention', 'slow'].includes(i.group)).length };
+}
+
+// 同一組裡的先後：去背從試算表最下面往上做；其他依插隊 > A > B > C > D，同狀態依試算表由上往下
+export function workOrder(a, b) {
+  const rowUp = (x) => (x.sheet_row == null ? Infinity : x.sheet_row);
+  if (a.step === 'cutout' && b.step === 'cutout') {
+    const ra = a.rush_date || '9999';
+    const rb = b.rush_date || '9999';
+    if (ra !== rb) return ra < rb ? -1 : 1;
+    const da = a.sheet_row == null ? -Infinity : a.sheet_row;
+    const db = b.sheet_row == null ? -Infinity : b.sheet_row;
+    return db - da || a.started_at - b.started_at;
+  }
+  return comparePriority(a, b) || rowUp(a) - rowUp(b) || a.started_at - b.started_at;
 }
 
 // 商品頁：每個人在這件花的時間（沒人認領的等待另外列）
@@ -268,12 +290,13 @@ export function ranking({ stints, now, cfg, since = 0 }) {
   for (const s of stints) {
     if (!s.member_id || (s.ended_at ?? now) < since) continue;
     const k = `${s.member_id}|${s.product_id}|${s.step}`;
-    const e = entries.get(k) || { member_id: s.member_id, step: s.step, held: 0, open: false };
+    const e = entries.get(k) || { member_id: s.member_id, step: s.step, held: 0, open: false, imported: false };
     e.held += hours.get(s.id) || 0;
     if (s.ended_at == null) e.open = true;
+    if (s.start_reason === 'import') e.imported = true;
     entries.set(k, e);
   }
-  const done = [...entries.values()].filter((e) => !e.open);
+  const done = [...entries.values()].filter((e) => !e.open && !e.imported);
   const teamAvg = {};
   for (const step of FLOW) {
     const v = done.filter((e) => e.step === step);
@@ -287,7 +310,7 @@ export function ranking({ stints, now, cfg, since = 0 }) {
   for (const e of entries.values()) {
     const r = row(e.member_id);
     r.held += e.held;
-    if (e.open) continue;
+    if (e.open || e.imported) continue;
     const st = (r.steps[e.step] ||= { n: 0, held: 0 });
     st.n++;
     st.held += e.held;

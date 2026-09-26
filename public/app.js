@@ -276,11 +276,12 @@ function claim(productId, version, step) {
 
 // ---------- 我的待辦 ----------
 
-function radarCard(it) {
+function radarCard(it, hero = false) {
   const tags = it.tags.filter((t) => t.t).map((t) => `<span class="tag ${t.k}">${esc(t.t)}</span>`).join('');
   const time = it.held_h != null ? `<span>這一步 <span class="mono">${esc(fmtWork(it.held_h))}</span>${it.avg_h != null ? `／平均 <span class="mono">${esc(fmtWork(it.avg_h))}</span>` : ''}</span>` : '';
   return `
-    <div class="card rcard g-${it.group}" data-href="#/p/${it.product_id}" data-key="${esc(it.key)}">
+    <div class="card rcard g-${it.group} ${hero ? 'hero' : ''}" data-href="#/p/${it.product_id}" data-key="${esc(it.key)}">
+      ${hero ? `<div class="hero-t">建議你現在先做這件<span class="muted">${esc(suggestWhy(it))}</span></div>` : ''}
       <div class="rc-grid">
         ${thumb(it.product_id, it.thumb)}
         <div style="min-width:0">
@@ -298,11 +299,20 @@ function radarCard(it) {
     </div>`;
 }
 
+// 為什麼建議這件（顯示用）
+function suggestWhy(it) {
+  if (it.rush) return `插隊，${fmtDate(it.rush.date)}下班前要完成`;
+  if (it.returned) return '被退回的件，優先處理';
+  if (it.step === 'cutout') return '去背從試算表最下面往上做';
+  return it.status_code ? `${it.status_code} ${STATUS[it.status_code]}，依優先順序排第一` : '依優先順序排第一';
+}
+
 async function viewRadar() {
   const scope = S.radarScope;
   const r = await api('GET', `/api/radar?scope=${scope}`);
   S.radarKeys = r.items.map((i) => i.product_id);
-  const byGroup = Object.fromEntries(GROUPS.map(([g]) => [g, r.items.filter((i) => i.group === g)]));
+  const hero = r.items.find((i) => i.suggest);
+  const byGroup = Object.fromEntries(GROUPS.map(([g]) => [g, r.items.filter((i) => i.group === g && i !== hero)]));
   const handled = S.handled && Date.now() - S.handled.at < 3000 ? S.handled : null;
   S.handled = null;
   const poolN = byGroup.pool.length;
@@ -315,7 +325,8 @@ async function viewRadar() {
       ${isMkt() ? '<a class="btn" href="#/new">＋ 手動開單</a>' : ''}
     </div>
     ${handled ? `<div class="card rcard ghost" style="margin-bottom:12px"><div><span class="t">${esc(handled.name)}</span><div class="muted">${esc(handled.to)}</div></div></div>` : ''}
-    ${r.stuck_count === 0 && !byGroup.mine.length && !poolN ? `<div class="card calm"><b>目前沒有待辦</b><span class="muted">${scope === 'all' ? '沒有比平均慢或快到期的插隊件' : '你手上沒有工作，也沒有可以認領的件'}</span></div>` : ''}
+    ${hero ? `<div class="hero-wrap">${radarCard(hero, true)}</div>` : ''}
+    ${r.stuck_count === 0 && !hero && !byGroup.mine.length && !poolN ? `<div class="card calm"><b>目前沒有待辦</b><span class="muted">${scope === 'all' ? '沒有比平均慢或快到期的插隊件' : '你手上沒有工作，也沒有可以認領的件'}</span></div>` : ''}
     ${GROUPS.map(([g, label, color]) => byGroup[g].length ? `
       <section class="radar-group">
         <h2><span class="dot" style="background:${color}"></span>${label}<span class="num">${byGroup[g].length}</span>
@@ -659,11 +670,15 @@ function nextHint(p) {
 
 function returnForm(p) {
   const isCheck = p.step === 'mkt_check';
+  const isOpt = p.step === 'optimizing';
   const targets = ['cutout', 'listing', 'optimizing'];
-  const prev = { cutout: 'open', listing: 'cutout', optimizing: 'listing' }[p.step];
+  const prev = { cutout: 'open', listing: 'cutout' }[p.step];
   return `<div class="return-box" data-return-form hidden>
     ${isCheck ? `<div class="field"><span>退回哪一步（改好後直接交回你）</span>
       <div class="hour-pick" id="ret-target">${targets.map((t) => `<label><input type="radio" name="target" value="${t}">${esc(stepLabel(t))}</label>`).join('')}</div></div>`
+    : isOpt ? `<div class="field"><span>哪裡有問題（改好後直接交回你）</span>
+      <div class="hour-pick" id="ret-target"><label><input type="radio" name="target" value="listing">文案 → 上架人員</label><label><input type="radio" name="target" value="cutout">去背圖 → 美編</label></div></div>
+      <label class="rename-chk" hidden><input type="checkbox" name="rename"> 商品名稱要改（Shopline 網址會跟著變，上架人員要去試算表換新網址）</label>`
     : `<p class="muted" style="margin-top:0">會退回「${esc(stepLabel(prev))}」，記一次退件在上一步的人身上。</p>`}
     <label class="field"><span>哪裡有問題（必填）</span><textarea data-return-note placeholder="例：去背邊緣有白邊、主圖比例不對"></textarea></label>
     <div class="row"><span class="missing" data-ret-miss></span><span class="spacer"></span><button class="btn warn act" data-return disabled>送出退回</button></div>
@@ -706,7 +721,7 @@ function actionPanel(p) {
   }
   const head = (title, sub) => `<div class="row" style="align-items:flex-start"><div style="flex:1"><h2>${title}</h2><div class="sub">${sub}</div></div>
     <button class="btn small" id="release-btn" title="不做了，放回給其他${esc(roleName(role))}">放回待認領</button></div>`;
-  const retBtn = p.step !== 'open' ? `<button class="btn danger act" data-open-return>${p.step === 'mkt_check' ? '退回…' : '退回上一步…'}</button>` : '';
+  const retBtn = p.step !== 'open' ? `<button class="btn danger act" data-open-return>${['mkt_check', 'optimizing'].includes(p.step) ? '退回…' : '退回上一步…'}</button>` : '';
   const foot = (btn, miss = '') => `<div class="row" style="margin-top:14px">${retBtn}<span class="missing" id="miss">${esc(miss)}</span><span class="spacer"></span>${btn}</div>${p.step !== 'open' ? returnForm(p) : ''}`;
   const toTxt = esc(nextHint(p));
   switch (p.step) {
@@ -725,8 +740,13 @@ function actionPanel(p) {
         ${foot(`<button class="btn primary act" id="complete-btn" ${n ? '' : 'disabled'}>去背完成 → ${toTxt}</button>`, n ? '' : '請上傳去背圖')}</div>`;
     }
     case 'listing': {
-      const url = p.sl_url || p.link || '';
-      return `<div class="card action mine">${returned}${head('上架・上 Shopline', `${timeLine}。用選品照片和去背圖上架，去背有問題就退回美編。`)}
+      const url = p.rename_pending ? '' : (p.sl_url || p.link || '');
+      const rename = p.rename_pending ? `<div class="warnbox rename-box"><b>商品名稱要改，網址會跟著變</b>
+        <ol class="steps"><li>在 Shopline 改好商品名稱，複製新的商品網址。</li>
+        <li>到試算表「銷售型-投廣素材」：這件的 D 欄換成新網址；舊網址那一列移到最下面，狀態寫「<b>已更名失效</b>」。</li>
+        <li>把新網址貼到下面，按完成，會直接交回設計師。</li></ol>
+        <div class="muted">舊網址：${esc(p.link)}</div></div>` : '';
+      return `<div class="card action mine">${returned}${rename}${head('上架・上 Shopline', `${timeLine}。用選品照片和去背圖上架，去背有問題就退回美編。`)}
         <div class="kind-title">選品照片</div>${photoGrid(p, 'pick', { download: true })}
         <div class="kind-title">去背圖</div>${photoGrid(p, 'cutout', { download: true })}
         <label class="field" style="margin-top:14px"><span>Shopline 商品網址</span><input type="url" id="sl-url" value="${esc(url)}" placeholder="https://"></label>
@@ -963,10 +983,12 @@ function bindProduct(p) {
     const slUrl = document.getElementById('sl-url');
     const optNote = document.getElementById('opt-note');
     if (slUrl) {
+      const sameAsOld = (v) => p.rename_pending && v.replace(/[?#].*$/, '').replace(/\/+$/, '') === String(p.link).replace(/[?#].*$/, '').replace(/\/+$/, '');
       const sync = () => {
-        const ok = /^https?:\/\//.test(slUrl.value.trim());
+        const v = slUrl.value.trim();
+        const ok = /^https?:\/\//.test(v) && !sameAsOld(v);
         done.disabled = !ok;
-        miss.textContent = ok ? '' : '請貼上 Shopline 商品網址';
+        miss.textContent = ok ? '' : sameAsOld(v) ? '這是舊網址，請貼改名後的新網址' : '請貼上 Shopline 商品網址';
       };
       slUrl.oninput = sync;
       sync();
@@ -988,7 +1010,9 @@ function bindProduct(p) {
     const sync = () => {
       rf.querySelectorAll('.hour-pick label').forEach((l) => l.classList.toggle('on', l.querySelector('input').checked));
       const miss = [];
-      if (p.step === 'mkt_check' && !target()) miss.push('退回哪一步');
+      if (['mkt_check', 'optimizing'].includes(p.step) && !target()) miss.push(p.step === 'optimizing' ? '文案或去背圖' : '退回哪一步');
+      const rc = rf.querySelector('.rename-chk');
+      if (rc) { rc.hidden = target() !== 'listing'; if (rc.hidden) rc.querySelector('input').checked = false; }
       if (!note.value.trim()) miss.push('哪裡有問題');
       send.disabled = miss.length > 0;
       rf.querySelector('[data-ret-miss]').textContent = miss.length ? `還缺：${miss.join('、')}` : '';
@@ -997,8 +1021,9 @@ function bindProduct(p) {
     rf.addEventListener('change', sync);
     sync();
     send.onclick = () => {
-      const t = p.step === 'mkt_check' ? target() : { cutout: 'open', listing: 'cutout', optimizing: 'listing' }[p.step];
-      doAction('return', { note: note.value.trim(), target: t }, `已退回「${stepLabel(t)}」`);
+      const t = ['mkt_check', 'optimizing'].includes(p.step) ? target() : { cutout: 'open', listing: 'cutout' }[p.step];
+      const rename = !!rf.querySelector('[name=rename]:checked');
+      doAction('return', { note: note.value.trim(), target: t, rename }, `已退回「${stepLabel(t)}」${rename ? '，上架人員會換新網址' : ''}`);
     };
   }
 

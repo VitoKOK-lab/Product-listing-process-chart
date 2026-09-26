@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { workHoursBetween, addWorkHours, localToEpoch } from '../src/worktime.js';
 import {
-  stintHours, stepTimes, teamAverages, compare, rushInfo, comparePriority, returnEvents, overviewRows, buildRadar, ranking, currentReturn,
+  stintHours, stepTimes, teamAverages, compare, rushInfo, comparePriority, returnEvents, overviewRows, buildRadar, ranking, currentReturn, workOrder,
 } from '../src/analytics.js';
 import { statusCode, sheetKey, sheetRows, planSync, extractOgImage } from '../src/sheet.js';
 
@@ -154,9 +154,9 @@ test('試算表列：空名稱略過，同一商品保留最高優先', () => {
 
 test('同步計畫：新增、更新、下架、恢復；手動開單不會被下架', () => {
   const existing = [
-    { id: 1, sheet_key: 'name:a', name: 'a', link: '', sheet_status: '待製作', status_code: 'D', source: 'sheet' },
+    { id: 1, sheet_key: 'name:a', name: 'a', link: '', sheet_status: '待製作', status_code: 'D', source: 'sheet', sheet_row: 0 },
     { id: 2, sheet_key: 'name:b', name: 'b', link: '', sheet_status: '待製作', status_code: 'D', source: 'sheet' },
-    { id: 3, sheet_key: 'name:c', name: 'c', link: '', sheet_status: '', status_code: '', source: 'sheet', delisted_at: 1 },
+    { id: 3, sheet_key: 'name:c', name: 'c', link: '', sheet_status: '', status_code: '', source: 'sheet', delisted_at: 1, sheet_row: 1 },
     { id: 4, sheet_key: null, name: 'm', source: 'manual' },
   ];
   const rows = sheetRows([
@@ -174,4 +174,43 @@ test('讀首圖：og:image，屬性順序不同、相對網址也可以', () => 
   assert.equal(extractOgImage("<meta property='og:image' content='//cdn.x/b.png' />", 'https://s.tw/p'), 'https://cdn.x/b.png');
   assert.equal(extractOgImage('<meta name="twitter:image" content="/c.webp">', 'https://s.tw/p/1'), 'https://s.tw/c.webp');
   assert.equal(extractOgImage('<title>x</title>', 'https://s.tw'), null);
+});
+
+test('已停止／已更名失效：已有的下架，沒有的不建立', () => {
+  assert.equal(statusCode('已停止'), 'X');
+  assert.equal(statusCode('已更名失效'), 'X');
+  const existing = [{ id: 1, sheet_key: 'url:https://s.tw/p/old', name: '舊名', link: 'https://s.tw/p/old', sheet_status: '投放中', status_code: 'A', source: 'sheet', sheet_row: 0 }];
+  const rows = sheetRows([
+    { status: '投放中', name: '新名', link: 'https://s.tw/p/new' },
+    { status: '已更名失效', name: '舊名', link: 'https://s.tw/p/old' },
+    { status: '已停止', name: '沒做過的', link: 'https://s.tw/p/x' },
+  ]);
+  const plan = planSync(existing, rows);
+  assert.deepEqual(plan.inserts.map((r) => r.name), ['新名']);
+  assert.deepEqual(plan.delist, [1]);
+});
+
+test('去背從試算表最下面往上做；其他依優先序、試算表由上往下', () => {
+  const cut = [{ step: 'cutout', sheet_row: 3, started_at: 0 }, { step: 'cutout', sheet_row: 9, started_at: 0 }, { step: 'cutout', sheet_row: null, started_at: 0 }];
+  assert.deepEqual(cut.sort(workOrder).map((x) => x.sheet_row), [9, 3, null]);
+  const opt = [
+    { step: 'optimizing', status_code: 'B', sheet_row: 1, started_at: 0 }, { step: 'optimizing', status_code: 'A', sheet_row: 5, started_at: 0 },
+    { step: 'optimizing', status_code: 'A', sheet_row: 2, started_at: 0 },
+  ];
+  assert.deepEqual(opt.sort(workOrder).map((x) => x.sheet_row), [2, 5, 1]);
+});
+
+test('整批匯入的舊件不算團隊平均，也不判偏慢；待辦標出建議先做的那一件', () => {
+  const products = [];
+  const stints = [];
+  for (let i = 1; i <= 4; i++) {
+    products.push({ id: i, name: `p${i}`, step: 'optimizing', status_code: i === 3 ? 'A' : 'C', sheet_row: i });
+    stints.push({ ...st(i, 'optimizing', 8, at(MON, 9), null, 'import'), role: 'designer' });
+  }
+  const r = buildRadar({ products, allProducts: products, stints, mentions: [], me: 8, meRoles: ['designer'], scope: 'me', now: at(WED, 9), cfg, settings });
+  assert.equal(r.items[0].product_id, 3);
+  assert.equal(r.items[0].suggest, true);
+  assert.ok(r.items.every((i) => i.level === 'ok'));
+  const t = stepTimes(stints, stintHours(stints, at(WED, 9), cfg));
+  assert.equal(teamAverages(products.map((p) => ({ ...p, step: 'mkt_check' })), t).optimizing.n, 0);
 });
