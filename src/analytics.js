@@ -126,7 +126,7 @@ export function currentReturn(stints, open) {
   const same = stints.filter((x) => x.product_id === open.product_id && x.step === open.step && (x.started_at < open.started_at || (x.started_at === open.started_at && x.id <= open.id)))
     .sort((a, b) => b.started_at - a.started_at || b.id - a.id);
   for (const x of same) {
-    if (x.start_reason === 'return') return x;
+    if (x.start_reason === 'return' || x.start_reason === 'nudge') return x;
     if (VISIT_START.has(x.start_reason)) return null;
   }
   return null;
@@ -200,6 +200,7 @@ export function buildRadar({ products, allProducts, stints, mentions, me, meRole
   const { times, avgs } = ctx({ allProducts, stints, now, cfg });
   const prodById = new Map(products.map((p) => [p.id, p]));
   const items = new Map();
+  const openCut = new Set(stints.filter((s) => s.ended_at == null && s.step === 'cutout').map((s) => s.product_id));
 
   for (const s of stints) {
     if (s.ended_at != null || !prodById.has(s.product_id)) continue;
@@ -228,13 +229,13 @@ export function buildRadar({ products, allProducts, stints, mentions, me, meRole
       if (group === 'mine') group = 'slow';
     }
     if (!s.member_id) tags.push({ t: '等人認領', k: 'wait' });
-    if (s.step === 'listing' && p.step === 'cutout') tags.push({ t: '圖還在做', k: 'wait' });
+    if (s.step === 'optimizing' && openCut.has(p.id)) tags.push({ t: '圖還在做', k: 'wait' });
     if (s.step === 'listing' && p.rename_pending) tags.push({ t: '名稱要改・網址會變', k: 'return' });
     items.set(`${s.product_id}:${s.id}`, {
       key: `${s.product_id}:${s.id}`, product_id: p.id, name: p.name, link: p.link || '', step: s.step, role: s.role,
       holder_id: s.member_id ?? null, claimable, started_at: s.started_at,
       held_h: showTime ? held : null, wait_h: showTime ? round1(st?.pool || 0) : null, avg_h: showTime ? avgs[s.step]?.avg ?? null : null,
-      blocked: s.step === 'listing' && p.step === 'cutout',
+
       level: c.level, group, tags, returned: r ? { note: r.note, by: r.by_id } : null, rush,
       status_code: p.status_code || '', rush_date: p.rush_date ?? null, thumb: p.thumb_ver || 0, version: p.version,
       sheet_row: p.sheet_row ?? null,

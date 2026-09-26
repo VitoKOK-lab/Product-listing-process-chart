@@ -639,7 +639,7 @@ function returnForm(p) {
     ${isCheck ? `<div class="field"><span>退回哪一步（改好後直接交回你）</span>
       <div class="hour-pick" id="ret-target">${targets.map((t) => `<label><input type="radio" name="target" value="${t}">${esc(stepLabel(t))}</label>`).join('')}</div></div>`
     : isOpt ? `<div class="field"><span>哪裡有問題（改好後直接交回你）</span>
-      <div class="hour-pick" id="ret-target"><label><input type="radio" name="target" value="listing">文案 → 上架人員</label><label><input type="radio" name="target" value="cutout">去背圖 → 美編</label></div></div>
+      <div class="hour-pick" id="ret-target"><label><input type="radio" name="target" value="listing">文案 → 上架人員</label><label><input type="radio" name="target" value="cutout">圖 → 美編</label></div></div>
       <label class="rename-chk" hidden><input type="checkbox" name="rename"> 商品名稱要改（Shopline 網址會跟著變，上架人員要去試算表換新網址）</label>`
     : `<p class="muted" style="margin-top:0">會退回「${esc(stepLabel(prev))}」，記一次退件在上一步的人身上。</p>`}
     <label class="field"><span>哪裡有問題（必填）</span><textarea data-return-note placeholder="例：去背邊緣有白邊、主圖比例不對"></textarea></label>
@@ -692,10 +692,10 @@ function actionPanel(p) {
       ${others}
     </div>`;
   }
-  const waitingImg = step === 'listing' && p.step === 'cutout';
+  const imgPending = step === 'listing' && (p.opens || []).some((o) => o.step === 'cutout');
   const head = (title, sub) => `<div class="row" style="align-items:flex-start"><div style="flex:1"><h2>${title}</h2><div class="sub">${sub}</div></div>
     <button class="btn small" id="release-btn" title="不做了，放回給其他${esc(roleName(role))}">放回待認領</button></div>${others}`;
-  const canReturn = !waitingImg && step !== 'cutout';
+  const canReturn = step !== 'cutout' && open.step === p.step && !imgPending;
   const retBtn = canReturn ? `<button class="btn danger act" data-open-return>${['mkt_check', 'optimizing'].includes(step) ? '退回…' : '退回上一步…'}</button>` : '';
   const foot = (btn, miss = '') => `<div class="row" style="margin-top:14px">${retBtn}<span class="missing" id="miss">${esc(miss)}</span><span class="spacer"></span>${btn}</div>${canReturn ? returnForm(p) : ''}`;
   const toTxt = esc(nextHint(p, step));
@@ -714,10 +714,10 @@ function actionPanel(p) {
         <li>到試算表「銷售型-投廣素材」：這件的 D 欄換成新網址；舊網址那一列移到最下面，狀態寫「<b>已更名失效</b>」。</li>
         <li>把新網址貼到下面，按完成，會直接交回設計師。</li></ol>
         <div class="muted">舊網址：${esc(p.link)}</div></div>` : '';
-      return `<div class="card action mine">${returned}${rename}${head('文案・上架', `可以先寫文案；美編的圖做好才能按「已上架」。圖有問題就退回美編。`)}
+      return `<div class="card action mine">${returned}${rename}${head('文案・上架', imgPending ? '美編的圖還在做，可以先上架；上架後交給設計師。' : '圖有問題就退回美編。')}
         <div class="kind-title">美編做好的圖</div>${photoGrid(p, 'cutout', { download: true })}
         <label class="field" style="margin-top:14px"><span>Shopline 商品網址</span><input type="url" id="sl-url" value="${esc(url)}" placeholder="https://"></label>
-        ${foot(`<button class="btn primary act" id="complete-btn" ${waitingImg ? 'disabled data-wait="1"' : ''}>已上架 → ${toTxt}</button>`, waitingImg ? '美編的圖還沒做好' : '')}</div>`;
+        ${foot(`<button class="btn primary act" id="complete-btn">已上架 → ${toTxt}</button>`)}</div>`;
     }
     case 'optimizing': {
       return `<div class="card action mine">${returned}${head('優化・直接改 Shopline 線上頁面', `文案或圖有問題就退回。`)}
@@ -934,8 +934,8 @@ function bindProduct(p) {
       const sync = () => {
         const v = slUrl.value.trim();
         const ok = /^https?:\/\//.test(v) && !sameAsOld(v);
-        done.disabled = !ok || !!done.dataset.wait;
-        miss.textContent = done.dataset.wait ? '美編的圖還沒做好，做好才能按已上架' : ok ? '' : sameAsOld(v) ? '這是舊網址，請貼改名後的新網址' : '請貼上 Shopline 商品網址';
+        done.disabled = !ok;
+        miss.textContent = ok ? '' : sameAsOld(v) ? '這是舊網址，請貼改名後的新網址' : '請貼上 Shopline 商品網址';
       };
       slUrl.oninput = sync;
       sync();
@@ -957,7 +957,7 @@ function bindProduct(p) {
     const sync = () => {
       rf.querySelectorAll('.hour-pick label').forEach((l) => l.classList.toggle('on', l.querySelector('input').checked));
       const miss = [];
-      if (['mkt_check', 'optimizing'].includes(p.step) && !target()) miss.push(p.step === 'optimizing' ? '文案或去背圖' : '退回哪一步');
+      if (['mkt_check', 'optimizing'].includes(p.step) && !target()) miss.push(p.step === 'optimizing' ? '文案或圖' : '退回哪一步');
       const rc = rf.querySelector('.rename-chk');
       if (rc) { rc.hidden = target() !== 'listing'; if (rc.hidden) rc.querySelector('input').checked = false; }
       if (!note.value.trim()) miss.push('哪裡有問題');

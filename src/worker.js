@@ -2,7 +2,7 @@
 // 資料：D1（DB）；照片與首圖：R2（PHOTOS）；前端：public/
 import { localYmd } from './worktime.js';
 import {
-  STEP_LABEL, STEP_ROLE, FLOW, stintHours, overviewRows, buildRadar, attributionFor, ranking, metrics,
+  STEP_LABEL, STEP_ROLE, FLOW, STEPS, stintHours, overviewRows, buildRadar, attributionFor, ranking, metrics,
   rushInfo, compare, teamAverages, stepTimes, currentReturn,
 } from './analytics.js';
 import { sheetRows, planSync, extractOgImage, normalizeLink, sheetKey } from './sheet.js';
@@ -537,11 +537,9 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params }) =>
   const need = () => {
     if (!open) throw new HttpError(409, '這件商品已不在這一步，畫面已更新');
   };
-  // 完成、退回只能對商品目前所在的那一步（文案可以先寫，但要等圖做好才能上架）
+  // 退回只能對商品目前所在的那一步
   const mustBeCurrent = () => {
-    if (open.step !== p.step) {
-      throw new HttpError(400, open.step === 'listing' && p.step === 'cutout' ? '美編的圖還沒做好，做好才能按「已上架」' : '這件商品已不在這一步，畫面已更新');
-    }
+    if (open.step !== p.step) throw new HttpError(409, '這件商品已不在這一步，畫面已更新');
   };
   const mustHold = () => {
     need();
@@ -549,14 +547,22 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params }) =>
   };
   const photoCount = async (kind) => (await db.prepare('SELECT COUNT(*) AS n FROM photos WHERE product_id = ? AND kind = ? AND deleted_at IS NULL').bind(id, kind).first()).n;
   const forward = async (endReason, extra = {}) => {
+    const from = open ? open.step : p.step;
+    // 做圖、文案同時進行：另一段已經先往後走了，這一段做完只要收掉
+    if (STEPS.indexOf(from) < STEPS.indexOf(p.step)) {
+      return transition(db, p, open, me, {
+        endReason, endNote: extra.endNote, updates: extra.updates || {},
+        action: extra.action || 'complete', detail: `${STEP_LABEL[from]}完成${extra.detail ? `：${extra.detail}` : ''}`,
+      });
+    }
     // 被後面的人退回、改好了：直接交回退回的那一步
-    const to = p.return_to && p.return_to !== p.step ? p.return_to : NEXT[p.step];
+    const to = p.return_to && p.return_to !== from ? p.return_to : NEXT[from];
     // 文案那一段已經在進行（同時開始的），不用再開一段
     const running = to !== 'done' && await openStint(db, id, to);
     const member = to === 'done' || running ? null : await holderFor(db, p, to);
     return transition(db, p, open, me, {
       endReason, to, member, skipStint: !!running, updates: { return_to: null, ...(extra.updates || {}) }, endNote: extra.endNote,
-      action: extra.action || 'complete', detail: `${STEP_LABEL[p.step]} → ${STEP_LABEL[to]}${extra.detail ? `：${extra.detail}` : ''}`,
+      action: extra.action || 'complete', detail: `${STEP_LABEL[from]} → ${STEP_LABEL[to]}${extra.detail ? `：${extra.detail}` : ''}`,
     });
   };
   let stmts;
@@ -579,11 +585,10 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params }) =>
       break;
     }
     case 'complete': {
-      mustHold();
-      mustBeCurrent();
-      if (p.step === 'open' && !(await photoCount('pick'))) throw new HttpError(400, '請至少上傳 1 張選品照片');
-      if (p.step === 'cutout' && !(await photoCount('cutout'))) throw new HttpError(400, '請上傳去背圖');
-      if (p.step === 'listing') {
+      mustHold(); // 做圖、文案可以各自先完成
+      if (open.step === 'open' && !(await photoCount('pick'))) throw new HttpError(400, '請至少上傳 1 張選品照片');
+      if (open.step === 'cutout' && !(await photoCount('cutout'))) throw new HttpError(400, '請上傳做好的圖');
+      if (open.step === 'listing') {
         const slUrl = String(b.sl_url ?? '').trim().slice(0, 500);
         if (!/^https?:\/\//.test(slUrl)) throw new HttpError(400, '請貼上 Shopline 商品網址（http 開頭）');
         const updates = { sl_url: slUrl };
@@ -597,7 +602,8 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params }) =>
             const dup = await db.prepare('SELECT id, step FROM products WHERE sheet_key = ? AND id != ? AND deleted_at IS NULL').bind(key, id).first();
             if (dup) {
               const pics = await db.prepare('SELECT COUNT(*) AS n FROM photos WHERE product_id = ? AND deleted_at IS NULL').bind(dup.id).first();
-              if (dup.step !== 'open' || pics.n) throw new HttpError(409, '這個新網址在系統裡已經是另一件商品，而且已經開始作業，請找管理員處理');
+              const held = await db.prepare('SELECT COUNT(*) AS n FROM stints WHERE product_id = ? AND member_id IS NOT NULL').bind(dup.id).first();
+              if (pics.n || held.n) throw new HttpError(409, '這個新網址在系統裡已經是另一件商品，而且已經開始作業，請找管理員處理');
               // 先同步進來的新網址那一件還沒開始，併到這一件
               extra.push(db.prepare('UPDATE products SET sheet_key = NULL, deleted_at = ?, version = version + 1 WHERE id = ?').bind(now(), dup.id));
               extra.push(db.prepare("UPDATE stints SET ended_at = ?, end_reason = 'merged' WHERE product_id = ? AND ended_at IS NULL").bind(now(), dup.id));
@@ -608,13 +614,13 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params }) =>
         stmts = [...extra, ...(await forward('complete', { updates, detail: p.rename_pending ? '已換新網址' : '' }))];
         break;
       }
-      if (p.step === 'optimizing') {
+      if (open.step === 'optimizing') {
         const note = String(b.note ?? '').trim().slice(0, 2000);
         if (!note) throw new HttpError(400, '請填寫改了什麼');
         stmts = await forward('complete', { endNote: note, detail: note.slice(0, 60) });
         break;
       }
-      stmts = await forward(p.step === 'mkt_check' ? 'pass' : 'complete', { action: p.step === 'mkt_check' ? 'check_pass' : 'complete' });
+      stmts = await forward(open.step === 'mkt_check' ? 'pass' : 'complete', { action: open.step === 'mkt_check' ? 'check_pass' : 'complete' });
       break;
     }
     case 'return': {
@@ -636,18 +642,34 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params }) =>
         to = ['open', 'cutout', 'listing', 'optimizing'].includes(b.target) ? b.target : null;
         if (!to || to === 'open') throw new HttpError(400, '請選要退回哪一步');
       } else if (p.step === 'optimizing') {
-        // 設計師：文案 → 上架人員；去背圖 → 美編。改好直接交回設計師
+        // 設計師：文案 → 上架人員；圖 → 美編。改好直接交回設計師
         to = { listing: 'listing', cutout: 'cutout' }[b.target];
-        if (!to) throw new HttpError(400, '請選退回原因：文案或去背圖');
-        label = to === 'listing' ? (b.rename ? '文案・名稱要改' : '文案') : '去背圖';
+        if (!to) throw new HttpError(400, '請選退回原因：文案或圖');
+        label = to === 'listing' ? (b.rename ? '文案・名稱要改' : '文案') : '圖';
         if (to === 'listing' && b.rename) updates.rename_pending = 1;
       } else {
         to = PREV[p.step];
         if (!to) throw new HttpError(400, '開單沒有上一步可以退回');
       }
+      const text = label ? `【${label}】${note}` : note;
+      const running = await openStint(db, id, to);
+      if (running) {
+        // 那一步本來就還在做（例如圖還沒做完就先上架）：不算退件，把話帶給正在做的人，做完直接交回
+        const t = now();
+        stmts = [
+          ...transition(db, p, open, me, {
+            endReason: 'return', to, skipStint: true, updates: { ...updates, return_to: p.step },
+            action: 'return', detail: `${STEP_LABEL[p.step]} → ${STEP_LABEL[to]}（還在做）：${note.slice(0, 60)}`,
+          }),
+          db.prepare("UPDATE stints SET ended_at = ?, end_reason = 'nudge' WHERE id = ?").bind(t, running.id),
+          db.prepare(`INSERT INTO stints (product_id, step, member_id, role, started_at, start_reason, note, by_id) VALUES (?, ?, ?, ?, ?, 'nudge', ?, ?)`)
+            .bind(id, to, running.member_id, running.role, t, text, me.id),
+        ];
+        break;
+      }
       const member = await holderFor(db, p, to);
       stmts = transition(db, p, open, me, {
-        endReason: 'return', to, member, startReason: 'return', note: label ? `【${label}】${note}` : note,
+        endReason: 'return', to, member, startReason: 'return', note: text,
         // 行銷檢查、設計師退回：改好直接交回；中間關卡退回：照正常流程往下走
         updates: { ...updates, return_to: ['mkt_check', 'optimizing'].includes(p.step) || byAdmin ? p.step : null },
         action: 'return', detail: `${STEP_LABEL[p.step]} → ${STEP_LABEL[to]}：${label ? `【${label}】` : ''}${note.slice(0, 60)}`,
