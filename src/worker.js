@@ -35,6 +35,8 @@ const TABLES = [
     body TEXT NOT NULL, created_at INTEGER NOT NULL, deleted_at INTEGER)`,
   `CREATE TABLE IF NOT EXISTS mentions (id INTEGER PRIMARY KEY AUTOINCREMENT, comment_id INTEGER NOT NULL, product_id INTEGER NOT NULL,
     member_id INTEGER NOT NULL, created_at INTEGER NOT NULL, resolved_at INTEGER)`,
+  // 商品換過網址：舊網址 → 商品，同步時 Excel 還是舊網址也對得上（以系統為主）
+  `CREATE TABLE IF NOT EXISTS product_aliases (key TEXT PRIMARY KEY, product_id INTEGER NOT NULL, created_at INTEGER NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS idx_stints_product ON stints(product_id, started_at)`,
   `CREATE INDEX IF NOT EXISTS idx_stints_open ON stints(ended_at)`,
   `CREATE INDEX IF NOT EXISTS idx_photos_product ON photos(product_id)`,
@@ -69,10 +71,7 @@ const DEFAULT_SETTINGS = {
 const NEXT = { open: 'cutout', cutout: 'listing', listing: 'optimizing', optimizing: 'mkt_check', mkt_check: 'done' };
 const PREV = { cutout: 'open', listing: 'cutout', optimizing: 'listing' };
 const PHOTO_STEP = { pick: 'open', cutout: 'cutout', opt: 'optimizing' };
-// 美編做圖的角度：正面、側面、佩戴示意必備；背面、細節特寫選填
 const ANGLES = ['front', 'side', 'wear', 'back', 'detail'];
-const REQUIRED_ANGLES = { front: '正面', side: '側面', wear: '佩戴示意' };
-const COPY_CHECKS = 10; // 商品文案第一階段檢查標準的項目數
 const MAX_PHOTO_BYTES = 10 * 1024 * 1024;
 const MAX_THUMB_BYTES = 5 * 1024 * 1024;
 const THUMBS_PER_CALL = 8; // 每次最多處理幾件，避免超過 Worker 對外連線上限
@@ -497,7 +496,8 @@ route('POST', '/api/products', async ({ db, env, request, me }) => {
   const link = String(b.link ?? '').trim().slice(0, 500);
   if (!/^https?:\/\//.test(link)) throw new HttpError(400, '請貼上商品網址（http 開頭）');
   const key = sheetKey(name, link);
-  const dup = await db.prepare('SELECT id, name, delisted_at FROM products WHERE sheet_key = ? AND deleted_at IS NULL').bind(key).first();
+  const dup = await db.prepare(`SELECT id, name FROM products WHERE deleted_at IS NULL AND (sheet_key = ?
+    OR id = (SELECT product_id FROM product_aliases WHERE key = ?))`).bind(key, key).first();
   if (dup) throw new HttpError(409, `這個網址已經在系統裡了：${dup.name}`, { id: dup.id });
   const t = now();
   const res = await db.prepare(`INSERT INTO products (name, link, sl_url, sheet_key, source, step, created_at, updated_at)
@@ -617,26 +617,20 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params }) =>
     case 'complete': {
       mustHold(); // 做圖、文案可以各自先完成
       if (open.step === 'open' && !(await photoCount('pick'))) throw new HttpError(400, '請至少上傳 1 張選品照片');
-      if (open.step === 'cutout') {
-        const { results: got } = await db.prepare("SELECT DISTINCT angle FROM photos WHERE product_id = ? AND kind = 'cutout' AND deleted_at IS NULL").bind(id).all();
-        const have = new Set(got.map((r) => r.angle));
-        const lack = Object.entries(REQUIRED_ANGLES).filter(([k]) => !have.has(k)).map(([, l]) => l);
-        if (lack.length) throw new HttpError(400, `還缺：${lack.join('、')}`);
-      }
+      // 做圖、優化的成品直接上傳到 Shopline，系統裡不用上傳
       if (open.step === 'listing') {
         const slUrl = String(b.sl_url ?? '').trim().slice(0, 500);
         if (!/^https?:\/\//.test(slUrl)) throw new HttpError(400, '請貼上 Shopline 商品網址（http 開頭）');
-        const checks = Array.isArray(b.checks) ? b.checks.filter(Boolean).length : 0;
-        if (checks < COPY_CHECKS) throw new HttpError(400, '文案檢查標準 10 項都要確認過才能上架');
         const updates = { sl_url: slUrl };
         const extra = [];
-        if (p.rename_pending) {
-          // 名稱改了、網址跟著變：換成新網址，下次同步對得上試算表的新網址；舊網址那列寫「已更名失效」
-          if (normalizeLink(slUrl) === normalizeLink(p.link)) throw new HttpError(400, '名稱改了網址也會變，請貼上改名後的新網址');
+        const changed = normalizeLink(slUrl) !== normalizeLink(p.link);
+        if (p.rename_pending && !changed) throw new HttpError(400, '名稱改了網址也會變，請貼上改名後的新網址');
+        if (changed) {
+          // 網址變了（多半是改了名稱）：以系統為主，改用新網址；舊網址記下來，Excel 還沒改時同步照樣對得上這一件
           Object.assign(updates, { link: slUrl, rename_pending: 0, thumb_checked_at: null });
-          if (p.source === 'sheet') {
+          if (p.sheet_key) {
             const key = sheetKey(p.name, slUrl);
-            const dup = await db.prepare('SELECT id, step FROM products WHERE sheet_key = ? AND id != ? AND deleted_at IS NULL').bind(key, id).first();
+            const dup = await db.prepare('SELECT id FROM products WHERE sheet_key = ? AND id != ? AND deleted_at IS NULL').bind(key, id).first();
             if (dup) {
               const pics = await db.prepare('SELECT COUNT(*) AS n FROM photos WHERE product_id = ? AND deleted_at IS NULL').bind(dup.id).first();
               const held = await db.prepare('SELECT COUNT(*) AS n FROM stints WHERE product_id = ? AND member_id IS NOT NULL').bind(dup.id).first();
@@ -645,10 +639,12 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params }) =>
               extra.push(db.prepare('UPDATE products SET sheet_key = NULL, deleted_at = ?, version = version + 1 WHERE id = ?').bind(now(), dup.id));
               extra.push(db.prepare("UPDATE stints SET ended_at = ?, end_reason = 'merged' WHERE product_id = ? AND ended_at IS NULL").bind(now(), dup.id));
             }
+            extra.push(db.prepare('INSERT INTO product_aliases (key, product_id, created_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET product_id = excluded.product_id')
+              .bind(p.sheet_key, id, now()));
             updates.sheet_key = key;
           }
         }
-        stmts = [...extra, ...(await forward('complete', { updates, detail: p.rename_pending ? '已換新網址' : '' }))];
+        stmts = [...extra, ...(await forward('complete', { updates, detail: changed ? '換了新網址' : '' }))];
         break;
       }
       if (open.step === 'optimizing') {
@@ -773,7 +769,8 @@ route('POST', '/api/sync/sheet', async ({ db, request, me, settings }) => {
   const rows = sheetRows(data.rows);
   if (!rows.length) throw new HttpError(400, '沒有讀到任何商品，請確認「銷售型-投廣素材」這一頁有資料');
   const { results: existing } = await db.prepare('SELECT id, name, link, sheet_key, source, sheet_status, status_code, sheet_row, step, delisted_at, deleted_at FROM products WHERE sheet_key IS NOT NULL').all();
-  const plan = planSync(existing, rows);
+  const { results: aliasRows } = await db.prepare('SELECT key, product_id FROM product_aliases').all();
+  const plan = planSync(existing, rows, aliasRows);
   const liveSheet = existing.filter((p) => p.source === 'sheet' && !p.delisted_at && !p.deleted_at).length;
   // 防呆：一次要下架超過一半，多半是讀錯頁或資料被清空
   if (!force && plan.delist.length > 10 && plan.delist.length > liveSheet / 2) {
@@ -789,6 +786,10 @@ route('POST', '/api/sync/sheet', async ({ db, request, me, settings }) => {
       stmts.push(db.prepare(`INSERT INTO stints (product_id, step, member_id, role, started_at, start_reason, by_id)
         SELECT id, ?, NULL, ?, ?, 'create', ? FROM products WHERE sheet_key = ?`).bind(step, role, t, me.id, r.key));
     }
+  }
+  for (const u of plan.stale) {
+    stmts.push(db.prepare('UPDATE products SET sheet_status = ?, status_code = ?, sheet_row = ?, updated_at = ?, version = version + 1 WHERE id = ?')
+      .bind(u.row.status, u.row.code, u.row.row, t, u.id));
   }
   for (const u of plan.updates) {
     stmts.push(db.prepare("UPDATE products SET name = ?, link = ?, sheet_status = ?, status_code = ?, sheet_row = ?, source = 'sheet', updated_at = ?, version = version + 1 WHERE id = ?")
@@ -817,7 +818,10 @@ route('POST', '/api/sync/sheet', async ({ db, request, me, settings }) => {
         .bind(t, me.id, r.id, r.id));
     }
   }
-  const summary = { at: t, by: me.id, total: rows.length, added: plan.inserts.length, updated: plan.updates.length, delisted: plan.delist.length, restored: plan.restore.length };
+  const summary = {
+    at: t, by: me.id, total: rows.length, added: plan.inserts.length, updated: plan.updates.length,
+    delisted: plan.delist.length, restored: plan.restore.length, stale: plan.stale.length,
+  };
   stmts.push(saveSetting(db, 'last_sheet_sync', summary));
   stmts.push(log(db, me.id, 'sheet_sync', null, `新增 ${summary.added}、更新 ${summary.updated}、下架 ${summary.delisted}、恢復 ${summary.restored}`));
   for (let i = 0; i < stmts.length; i += 80) await db.batch(stmts.slice(i, i + 80));
@@ -897,8 +901,8 @@ route('POST', '/api/products/:id/photos', async ({ db, env, request, me, params 
   if (!open || open.member_id !== me.id) throw new HttpError(403, '只有認領這一步的人可以上傳');
   const files = form.getAll('file').filter((f) => typeof f === 'object' && f.size > 0);
   if (!files.length) throw new HttpError(400, '沒有收到照片');
-  const angle = kind === 'cutout' ? String(form.get('angle') || '') : null;
-  if (kind === 'cutout' && !ANGLES.includes(angle)) throw new HttpError(400, '請選擇圖的角度');
+  const angle = kind === 'cutout' && form.get('angle') ? String(form.get('angle')) : null;
+  if (angle && !ANGLES.includes(angle)) throw new HttpError(400, '圖的角度錯誤');
   const t = now();
   const stmts = [];
   for (const f of files) {

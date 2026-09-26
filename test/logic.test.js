@@ -231,3 +231,17 @@ test('手動新增的商品：Excel 出現同一個網址就視為同一件，�
   assert.equal(plan.updates[0].id, 7);
   assert.equal(plan.updates[0].row.code, 'B');
 });
+
+test('換過網址以系統為主：Excel 還是舊網址也對得上，不重複建、不下架，名稱網址不被蓋掉', () => {
+  const existing = [{ id: 5, sheet_key: sheetKey('新名', 'https://s.tw/p/new'), name: '新名', link: 'https://s.tw/p/new', source: 'sheet', status_code: 'A', sheet_status: '投放中', sheet_row: 0 }];
+  const aliases = [{ key: sheetKey('舊名', 'https://s.tw/p/old'), product_id: 5 }];
+  let plan = planSync(existing, sheetRows([{ status: '優先製作', name: '舊名', link: 'https://s.tw/p/old' }]), aliases);
+  assert.deepEqual([plan.inserts.length, plan.delist.length, plan.updates.length], [0, 0, 0]);
+  assert.equal(plan.stale[0].id, 5);
+  assert.equal(plan.stale[0].row.code, 'B');
+  // Excel 同時有新舊兩列：以新網址那列為準
+  plan = planSync(existing, sheetRows([
+    { status: '已更名失效', name: '舊名', link: 'https://s.tw/p/old' }, { status: '投放中', name: '新名', link: 'https://s.tw/p/new' },
+  ]), aliases);
+  assert.deepEqual([plan.inserts.length, plan.delist.length, plan.stale.length], [0, 0, 0]);
+});

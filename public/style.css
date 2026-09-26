@@ -937,3 +937,4 @@ textarea.code { font: 12px/1.5 'Space Mono', ui-monospace, monospace; min-height
 .sop-list input { width: 18px; height: 18px; margin-top: 3px; flex: none; accent-color: var(--emerald); }
 .angle .photos { grid-template-columns: repeat(2, 1fr); }
 .angle .dropzone { grid-column: 1 / -1; aspect-ratio: auto; min-height: 96px; }
+ol.sop-list { margin: 0; padding-left: 22px; display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 4px 24px; font-size: 14px; line-height: 1.7; }

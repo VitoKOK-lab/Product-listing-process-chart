@@ -53,24 +53,38 @@ export function sheetRows(list) {
 // 比對試算表與系統：新增、更新、下架、恢復
 // existing: [{ id, sheet_key, name, link, sheet_status, status_code, sheet_row, delisted_at, deleted_at, source }]
 // 狀態是「已停止／已更名失效」的列：已經有的商品標成已下架，沒有的不建立
-export function planSync(existing, rows) {
+export function planSync(existing, rows, aliases = []) {
   const byKey = new Map(existing.filter((p) => p.sheet_key).map((p) => [p.sheet_key, p]));
+  const byId = new Map(existing.map((p) => [p.id, p]));
+  // 換過網址的商品：Excel 還是舊網址時照樣對得上（以系統為主）
+  const byAlias = new Map(aliases.map((a) => [a.key, byId.get(a.product_id)]).filter(([, p]) => p));
   const seen = new Set();
-  const plan = { inserts: [], updates: [], delist: [], restore: [] };
+  const plan = { inserts: [], updates: [], delist: [], restore: [], stale: [] };
+  const later = [];
   for (const r of rows) {
     const inactive = r.code === 'X';
-    if (!inactive) seen.add(r.key);
     const p = byKey.get(r.key);
-    if (!p) { if (!inactive) plan.inserts.push(r); continue; }
+    if (!p) { later.push(r); continue; }
     if (p.deleted_at) continue; // 被管理員刪除的不動
+    if (!inactive) seen.add(p.id);
     if (p.delisted_at && !inactive) plan.restore.push({ id: p.id, row: r });
     if (p.name !== r.name || (p.link || '') !== r.link || (p.sheet_status || '') !== r.status || (p.status_code || '') !== r.code
       || (p.sheet_row ?? null) !== (r.row ?? null) || p.source !== 'sheet') {
       plan.updates.push({ id: p.id, row: r });
     }
   }
+  for (const r of later) {
+    const inactive = r.code === 'X';
+    const p = byAlias.get(r.key);
+    if (!p) { if (!inactive) plan.inserts.push(r); continue; }
+    // Excel 還是舊網址：只帶狀態與排序，名稱與網址以系統為主；Excel 已有新網址那列就以新的為準
+    if (inactive || p.deleted_at || seen.has(p.id)) continue;
+    seen.add(p.id);
+    if (p.delisted_at) plan.restore.push({ id: p.id, row: r });
+    plan.stale.push({ id: p.id, row: r });
+  }
   for (const p of existing) {
-    if (p.source === 'sheet' && p.sheet_key && !seen.has(p.sheet_key) && !p.delisted_at && !p.deleted_at) plan.delist.push(p.id);
+    if (p.source === 'sheet' && p.sheet_key && !seen.has(p.id) && !p.delisted_at && !p.deleted_at) plan.delist.push(p.id);
   }
   return plan;
 }

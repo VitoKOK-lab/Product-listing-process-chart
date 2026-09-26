@@ -11,8 +11,6 @@ const STEP_COLOR = {
 };
 const KIND = { pick: '選品照片', cutout: '商品圖', opt: '優化截圖' };
 const STATUS = { A: '投放中', B: '優先製作', C: '可投放', D: '待製作' };
-// 美編做圖的角度：前三個必備
-const ANGLES = [['front', '正面', true], ['side', '側面', true], ['wear', '佩戴示意', true], ['back', '背面／底部', false], ['detail', '細節特寫', false]];
 // 上架人員：商品文案第一階段檢查標準
 const COPY_SOP = [
   '商品名稱正確', '寶石名稱正確', '克拉數正確', '材質正確', '證書資訊正確', '價格正確', '圖片需求清楚', '佩戴比例清楚', '不亂加未確認賣點',
@@ -465,7 +463,7 @@ function syncBar() {
   const ls = S.settings.last_sheet_sync;
   const lt = S.settings.last_thumb_sync;
   return `<div class="card sync-bar">
-    <span class="muted">試算表：${ls ? `${fmtTime(ls.at)} ${esc(member(ls.by)?.name ?? '')} 同步・共 ${ls.total} 件（新增 ${ls.added}、更新 ${ls.updated}、下架 ${ls.delisted}、恢復 ${ls.restored}）` : '還沒同步過'}</span>
+    <span class="muted">試算表：${ls ? `${fmtTime(ls.at)} ${esc(member(ls.by)?.name ?? '')} 同步・共 ${ls.total} 件（新增 ${ls.added}、更新 ${ls.updated}、下架 ${ls.delisted}、恢復 ${ls.restored}）${ls.stale ? `・<b class="over">${ls.stale} 件 Excel 還是舊網址</b>（以系統為主，請廣告人員更新）` : ''}` : '還沒同步過'}</span>
     <span class="muted">・首圖：${lt ? fmtTime(lt.at) : '還沒同步過'}</span>
     <span class="spacer"></span>
     <button class="btn small" id="sync-setup">連線設定</button>
@@ -540,7 +538,7 @@ async function syncSheet(force) {
   toast('同步試算表中…', false, 0);
   try {
     const r = await api('POST', '/api/sync/sheet', { force });
-    toast(`同步完成：共 ${r.total} 件，新增 ${r.added}、更新 ${r.updated}、下架 ${r.delisted}、恢復 ${r.restored}`, false, 6000);
+    toast(`同步完成：共 ${r.total} 件，新增 ${r.added}、更新 ${r.updated}、下架 ${r.delisted}、恢復 ${r.restored}${r.stale ? `；${r.stale} 件 Excel 還是舊網址` : ''}`, false, 7000);
     S.busy--;
     await refresh();
     return;
@@ -750,47 +748,40 @@ function actionPanel(p) {
   const toTxt = esc(nextHint(p, step));
   switch (step) {
     case 'cutout': {
-      const lack = ANGLES.filter(([k, , req]) => req && !p.photos.some((ph) => ph.kind === 'cutout' && ph.angle === k)).map(([, l]) => l);
-      return `<div class="card action mine">${returned}${head('做圖', '拍照或 AI 生成都可以，風格一致、清楚。正面、側面、佩戴示意三個角度都要有。')}
+      return `<div class="card action mine">${returned}${head('做圖', '做好的圖直接上傳到 Shopline 商品頁，完成後按右邊的「完成」。')}
         <div class="guide">
           <img src="/guide-photo.webp" data-full="/guide-photo.webp" alt="做圖教學示意圖" title="點一下放大">
           <div>
-            <b>做圖教學（點左邊的圖放大看範例）</b>
-            <ul><li><b>必備</b>：正面（主體設計）、側面（厚度、鑲嵌）、佩戴示意（手、頸、耳朵上的實際效果）</li>
-            <li>選填：背面／底部、細節特寫</li>
+            <b>做圖提示（點左邊的圖放大看範例）</b>
+            <ul><li><b>每個商品都要有</b>：正面（主體設計）、側面（厚度、鑲嵌）、佩戴示意（手、頸、耳朵上的實際效果）</li>
+            <li>需要時加上：背面／底部、細節特寫</li>
             <li>背景簡潔、光線充足、對焦清晰，不要過度濾鏡</li>
             <li>尺寸比例用統一角度與光源；AI 生成要真實自然，不誇張</li>
             <li>最短邊 ≥ 1200 px，JPG 或 PNG</li></ul>
             <div class="row" style="margin-top:6px">${shop}</div>
           </div>
         </div>
-        <div class="angles">${ANGLES.map(([k, l, req]) => `<div class="angle ${req ? 'req' : ''}">
-          <div class="kind-title">${esc(l)}${req ? '<span class="tag red">必備</span>' : '<span class="tag">選填</span>'}</div>
-          ${photoGrid(p, 'cutout', { upload: true, del: true, angle: k, label: l })}</div>`).join('')}</div>
-        ${foot(`<button class="btn primary act" id="complete-btn" ${lack.length ? 'disabled' : ''}>完成 → ${toTxt}</button>`, lack.length ? `還缺：${lack.join('、')}` : '')}</div>`;
+        ${foot(`<button class="btn primary act" id="complete-btn">完成 → ${toTxt}</button>`)}</div>`;
     }
     case 'listing': {
       const url = p.rename_pending ? '' : (p.sl_url || p.link || '');
       const rename = p.rename_pending ? `<div class="warnbox rename-box"><b>商品名稱要改，網址會跟著變</b>
         <ol class="steps"><li>在 Shopline 改好商品名稱，複製新的商品網址。</li>
-        <li>到試算表「銷售型-投廣素材」：這件的 D 欄換成新網址；舊網址那一列移到最下面，狀態寫「<b>已更名失效</b>」。</li>
         <li>把新網址貼到下面，按完成，會直接交回設計師。</li></ol>
-        <div class="muted">舊網址：${esc(p.link)}</div></div>` : '';
-      return `<div class="card action mine">${returned}${rename}${head('文案・上架', imgPending ? '美編的圖還在做，可以先上架；上架後交給設計師。' : '圖有問題就退回美編。')}
+        <div class="muted">舊網址：${esc(p.link)}<br>網址以系統為主。廣告的 Excel 還是舊網址也不會出錯，但廣告人員要自己確認投放的網址。</div></div>` : '';
+      return `<div class="card action mine">${returned}${rename}${head('文案・上架', `文案直接寫在 Shopline，完成後在下面輸入商品網址。${imgPending ? '美編的圖還在做，可以先上架。' : '圖有問題就退回美編。'}`)}
         <div class="sop">
           <b>商品文案第一階段檢查標準</b>
           <p class="muted">第一階段文案不是寫美，而是把商品資料寫對、寫清楚、寫完整，讓後面的拍照、AI 生成、修圖、設計都可以直接執行，不需要猜。</p>
-          <div class="sop-list">${COPY_SOP.map((t, i) => `<label><input type="checkbox" data-sop="${i}"><span>${i + 1}. ${esc(t)}</span></label>`).join('')}</div>
+          <ol class="sop-list">${COPY_SOP.map((t) => `<li>${esc(t)}</li>`).join('')}</ol>
         </div>
-        <div class="kind-title">美編做好的圖</div>${photoGrid(p, 'cutout', { download: true })}
+        <div class="row" style="margin-bottom:4px">${shop}</div>
         <label class="field" style="margin-top:14px"><span>Shopline 商品網址</span><input type="url" id="sl-url" value="${esc(url)}" placeholder="https://"></label>
         ${foot(`<button class="btn primary act" id="complete-btn">完成上架 → ${toTxt}</button>`)}</div>`;
     }
     case 'optimizing': {
       return `<div class="card action mine">${returned}${head('優化・直接改 Shopline 線上頁面', `文案或圖有問題就退回。`)}
         <div class="row" style="margin-bottom:12px">${shop}</div>
-        <div class="kind-title">商品圖（參考）</div>${photoGrid(p, 'cutout', { download: true })}
-        <div class="kind-title">優化截圖（選填）</div>${photoGrid(p, 'opt', { upload: true, del: true })}
         <label class="field" style="margin-top:14px"><span>改了什麼（必填）</span><textarea id="opt-note" placeholder="例：換主圖、補尺寸表、調整比例"></textarea></label>
         ${foot(`<button class="btn primary act" id="complete-btn" disabled>完成優化 → ${toTxt}</button>`, '請填寫改了什麼')}</div>`;
     }
@@ -799,8 +790,6 @@ function actionPanel(p) {
       return `<div class="card action mine">${head('行銷檢查・投放前最後確認', `哪一步有問題就退回那一步，改好直接回到你這裡。`)}
         <div class="row" style="margin-bottom:12px">${shop.replace('class="btn"', 'class="btn primary"')}</div>
         ${lastOpt ? `<div class="returned soft"><b>${esc(member(lastOpt.member_id)?.name ?? '')} 改了什麼</b><div class="note">${esc(lastOpt.end_note)}</div></div>` : ''}
-        <div class="kind-title">商品圖</div>${photoGrid(p, 'cutout')}
-        <div class="kind-title">優化截圖</div>${photoGrid(p, 'opt')}
         ${foot('<button class="btn go act" id="complete-btn">檢查通過・完成 ✓</button>')}</div>`;
     }
     default:
@@ -944,9 +933,9 @@ async function viewProduct(idStr) {
     ${adminBar(p)}
     <div class="detail">
       <div>
-        <div class="card section"><h2>圖片</h2>
-          ${['cutout', 'opt', 'pick'].filter((k) => p.photos.some((ph) => ph.kind === k)).map((k) => `<div class="kind-title">${KIND[k]}</div>${photoGrid(p, k, { download: true })}`).join('') || '<div class="muted">尚無圖片</div>'}
-        </div>
+        ${p.photos.length ? `<div class="card section"><h2>圖片</h2>
+          ${['cutout', 'opt', 'pick'].filter((k) => p.photos.some((ph) => ph.kind === k)).map((k) => `<div class="kind-title">${KIND[k]}</div>${photoGrid(p, k, { download: true })}`).join('')}
+        </div>` : ''}
         ${commentsBlock(p)}
       </div>
       <div>
@@ -998,22 +987,18 @@ function bindProduct(p) {
     const optNote = document.getElementById('opt-note');
     if (slUrl) {
       const sameAsOld = (v) => p.rename_pending && v.replace(/[?#].*$/, '').replace(/\/+$/, '') === String(p.link).replace(/[?#].*$/, '').replace(/\/+$/, '');
-      const sops = [...$app.querySelectorAll('[data-sop]')];
       const sync = () => {
         const v = slUrl.value.trim();
         const ok = /^https?:\/\//.test(v) && !sameAsOld(v);
-        const unchecked = sops.filter((c) => !c.checked).length;
-        sops.forEach((c) => c.parentElement.classList.toggle('on', c.checked));
-        done.disabled = !ok || unchecked > 0;
-        miss.textContent = unchecked ? `檢查標準還有 ${unchecked} 項沒確認` : ok ? '' : sameAsOld(v) ? '這是舊網址，請貼改名後的新網址' : '請貼上 Shopline 商品網址';
+        done.disabled = !ok;
+        miss.textContent = ok ? '' : sameAsOld(v) ? '這是舊網址，請貼改名後的新網址' : '請貼上 Shopline 商品網址';
       };
       slUrl.oninput = sync;
-      sops.forEach((c) => { c.onchange = sync; });
       sync();
     }
     if (optNote) optNote.oninput = () => { done.disabled = !optNote.value.trim(); miss.textContent = optNote.value.trim() ? '' : '請填寫改了什麼'; };
     done.onclick = () => {
-      const extra = slUrl ? { sl_url: slUrl.value.trim(), checks: [...$app.querySelectorAll('[data-sop]')].map((c) => c.checked) } : optNote ? { note: optNote.value.trim() } : {};
+      const extra = slUrl ? { sl_url: slUrl.value.trim() } : optNote ? { note: optNote.value.trim() } : {};
       doAction('complete', extra, cur.step === 'mkt_check' ? '檢查通過，已完成' : `已交給 ${nextHint(p, cur.step)}`);
     };
   }
