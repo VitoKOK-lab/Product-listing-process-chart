@@ -37,6 +37,9 @@ const TABLES = [
     member_id INTEGER NOT NULL, created_at INTEGER NOT NULL, resolved_at INTEGER)`,
   // 商品換過網址：舊網址 → 商品，同步時 Excel 還是舊網址也對得上（以系統為主）
   `CREATE TABLE IF NOT EXISTS product_aliases (key TEXT PRIMARY KEY, product_id INTEGER NOT NULL, created_at INTEGER NOT NULL)`,
+  // 同一個人多台裝置（例如電腦＋手機）：用配對碼加入
+  `CREATE TABLE IF NOT EXISTS member_devices (hash TEXT PRIMARY KEY, member_id INTEGER NOT NULL, created_at INTEGER NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS pair_codes (code TEXT PRIMARY KEY, member_id INTEGER NOT NULL, expires_at INTEGER NOT NULL, used_at INTEGER)`,
   `CREATE INDEX IF NOT EXISTS idx_stints_product ON stints(product_id, started_at)`,
   `CREATE INDEX IF NOT EXISTS idx_stints_open ON stints(ended_at)`,
   `CREATE INDEX IF NOT EXISTS idx_photos_product ON photos(product_id)`,
@@ -187,8 +190,9 @@ async function memberRoles(db, id) {
 async function currentMember(db, request) {
   const token = cookie(request, 'dt');
   if (!token || !/^[0-9a-f]{64}$/.test(token)) return null;
-  const m = await db.prepare('SELECT id, name, color, is_admin FROM members WHERE device_hash = ? AND active = 1')
-    .bind(await sha256(token)).first();
+  const h = await sha256(token);
+  const m = await db.prepare(`SELECT id, name, color, is_admin FROM members WHERE active = 1
+    AND (device_hash = ? OR id = (SELECT member_id FROM member_devices WHERE hash = ?))`).bind(h, h).first();
   if (!m) return null;
   m.roles = await memberRoles(db, m.id);
   return m;
@@ -347,6 +351,41 @@ route('POST', '/api/claim', async ({ db, request, me }) => {
   return json({ ok: true }, 200, { 'set-cookie': deviceCookie(token) });
 });
 
+// ---------- 加一台裝置：配對碼 ----------
+
+const PAIR_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // 去掉容易看錯的 0 O 1 I
+
+route('POST', '/api/pair-code', async ({ db, me }) => {
+  requireMe(me);
+  if (me.viewing_as) throw new HttpError(403, '切換視角時不能產生配對碼');
+  const bytes = crypto.getRandomValues(new Uint8Array(8));
+  const code = [...bytes].map((b) => PAIR_CHARS[b % PAIR_CHARS.length]).join('');
+  const t = now();
+  await db.batch([
+    db.prepare('DELETE FROM pair_codes WHERE member_id = ? OR expires_at < ?').bind(me.id, t),
+    db.prepare('INSERT INTO pair_codes (code, member_id, expires_at) VALUES (?, ?, ?)').bind(code, me.id, t + 10 * 60000),
+    log(db, me.id, 'pair_code'),
+  ]);
+  return json({ code, expires_at: t + 10 * 60000 });
+});
+
+route('POST', '/api/pair', async ({ db, request }) => {
+  const code = String((await body(request)).code ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (code.length !== 8) throw new HttpError(400, '配對碼是 8 碼');
+  const t = now();
+  const row = await db.prepare(`SELECT pc.member_id, m.name FROM pair_codes pc JOIN members m ON m.id = pc.member_id
+    WHERE pc.code = ? AND pc.used_at IS NULL AND pc.expires_at > ? AND m.active = 1`).bind(code, t).first();
+  if (!row) throw new HttpError(400, '配對碼不對或已過期，請在原本的裝置重新產生一組');
+  const token = newToken();
+  const res = await db.prepare('UPDATE pair_codes SET used_at = ? WHERE code = ? AND used_at IS NULL').bind(t, code).run();
+  if (!res.meta.changes) throw new HttpError(400, '這組配對碼已經用過了');
+  await db.batch([
+    db.prepare('INSERT INTO member_devices (hash, member_id, created_at) VALUES (?, ?, ?)').bind(await sha256(token), row.member_id, t),
+    log(db, row.member_id, 'device_add', null, row.name),
+  ]);
+  return json({ ok: true, name: row.name }, 200, { 'set-cookie': deviceCookie(token) });
+});
+
 // ---------- 成員（管理員） ----------
 
 async function setRoles(db, id, roles) {
@@ -399,6 +438,8 @@ route('POST', '/api/members/:id/reset', async ({ db, me, params }) => {
   if (!m) throw new HttpError(404, '找不到這位成員');
   await db.batch([
     db.prepare('UPDATE members SET device_hash = NULL, bound_at = NULL WHERE id = ?').bind(id),
+    db.prepare('DELETE FROM member_devices WHERE member_id = ?').bind(id),
+    db.prepare('DELETE FROM pair_codes WHERE member_id = ?').bind(id),
     log(db, me.id, 'member_reset', null, m.name),
   ]);
   return json({ ok: true });

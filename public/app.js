@@ -212,14 +212,30 @@ function renderMe() {
   const canSwitch = S.me.is_admin || S.me.viewing_as;
   const others = S.members.filter((m) => m.active);
   el.innerHTML = `${avatar(S.me)}<span>${esc(S.me.name)}</span><span class="roles">${esc(rolesText(S.me) || (S.me.is_admin ? '管理員' : ''))}</span>
+    ${S.me.viewing_as ? '' : '<button class="btn small" id="pair-btn" title="讓手機或另一台電腦也用你的名字登入">加手機</button>'}
     ${canSwitch ? `<select id="viewas-pick" title="切換成其他人的視角"><option value="">切換視角…</option>${others.map((m) => `<option value="${m.id}" ${m.id === S.me.id && S.me.viewing_as ? 'selected' : ''}>${esc(m.name)}${m.roles.length ? `（${esc(rolesText(m))}）` : ''}</option>`).join('')}</select>` : ''}`;
   bar.hidden = !S.me.viewing_as;
   if (S.me.viewing_as) {
     bar.innerHTML = `正在用 <b>${esc(S.me.name)}</b> 的視角看（只能看，不能操作）<button class="btn small" id="viewas-exit">回到 ${esc(S.me.real_name)}</button>`;
     document.getElementById('viewas-exit').onclick = () => setViewAs(null);
   }
+  const pb = document.getElementById('pair-btn');
+  if (pb) pb.onclick = openPairModal;
   const pick = document.getElementById('viewas-pick');
   if (pick) pick.onchange = () => setViewAs(Number(pick.value) || null);
+}
+
+// 在已登入的裝置產生配對碼，給手機輸入
+async function openPairModal() {
+  let r;
+  try { r = await api('POST', '/api/pair-code'); } catch (e) { return toast(e.message, true); }
+  const pretty = `${r.code.slice(0, 4)} ${r.code.slice(4)}`;
+  openModal(`
+    <h3>加一台手機（或電腦）</h3>
+    <p class="muted">在另一台裝置打開這個網站，登入頁最下面點「用配對碼登入」，輸入下面這組碼。</p>
+    <div class="pair-code mono">${esc(pretty)}</div>
+    <p class="muted">10 分鐘內有效（到 ${fmtClock(r.expires_at)}），只能用一次。不要給別人，拿到碼的人就能用你的名字登入。</p>
+    <div class="acts"><button class="btn primary" data-close>好</button></div>`);
 }
 
 function setViewAs(id) {
@@ -271,12 +287,28 @@ function renderLogin() {
   $app.innerHTML = `
     <div class="login">
       <h1>選擇你的名字</h1>
-      <p class="muted">選定後這台裝置會綁定你的名字，之後打開直接進入。<br>選錯或換裝置，請找管理員重設。</p>
+      <p class="muted">選定後這台裝置會綁定你的名字，之後打開直接進入。<br>已經在電腦登入、想加手機：用最下面的「配對碼」。選錯名字請找管理員重設。</p>
       ${S.members.length ? Object.entries(groups).map(([role, ms]) => `
         <div class="role-group"><h3>${ROLE_NAME[role] || role}</h3>
           <div class="name-grid">${ms.map((m) => `<button class="name-btn" data-id="${m.id}">${avatar(m)}<b>${esc(m.name)}</b></button>`).join('')}</div>
         </div>`).join('') : '<p class="empty">目前沒有可選的名字。請聯絡管理員新增或重設。</p>'}
     </div>`;
+  $app.querySelector('.login').insertAdjacentHTML('beforeend', `
+    <div class="pair-login">
+      <button class="btn" id="pair-open">已經在別台裝置登入過？用配對碼登入</button>
+      <form id="pair-form" hidden><p class="muted">在已登入的裝置點右上角「加手機」取得 8 碼配對碼。</p>
+        <div class="row" style="justify-content:center"><input type="text" name="code" maxlength="9" placeholder="例：ABCD EFGH" autocomplete="one-time-code" style="max-width:200px;text-transform:uppercase;text-align:center">
+        <button class="btn primary">登入</button></div></form>
+    </div>`);
+  document.getElementById('pair-open').onclick = () => { document.getElementById('pair-form').hidden = false; document.querySelector('#pair-form input').focus(); };
+  document.getElementById('pair-form').onsubmit = async (e) => {
+    e.preventDefault();
+    try {
+      const r = await api('POST', '/api/pair', { code: e.target.code.value });
+      toast(`已登入：${r.name}`);
+      await boot();
+    } catch (err) { toast(err.message, true); }
+  };
   $app.querySelectorAll('.name-btn').forEach((b) => {
     b.onclick = async () => {
       const m = member(Number(b.dataset.id));
@@ -513,7 +545,7 @@ const HELP = {
         <li><b>看不到完成或退回的按鈕？</b>要先按「我來做」認領，按鈕只給認領的人。</li>
         <li><b>換手機、清掉瀏覽器資料後進不去？</b>請管理員到設定幫你「重設綁定」，再重新選一次名字。</li>
         <li><b>有事要找某個人？</b>在商品頁留言輸入 @ 加名字，對方的待辦會出現提醒。</li>
-        <li><b>手機可以用嗎？</b>可以，用手機瀏覽器打開同一個網址就好。</li>
+        <li><b>手機可以用嗎？</b>可以。在已經登入的電腦點右上角「加手機」拿到 8 碼配對碼，用手機打開同一個網址，登入頁最下面點「用配對碼登入」輸入就好。</li>
       </ul>`,
   },
 };

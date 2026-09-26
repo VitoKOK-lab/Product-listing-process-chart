@@ -1038,3 +1038,7 @@ ol.sop-list { margin: 0; padding-left: 22px; display: grid; grid-template-column
 #viewas .btn { background: #fff; color: var(--ink); }
 #viewas-pick { width: auto; max-width: 180px; padding: 4px 8px; font-size: 13px; border-radius: 999px; }
 body:has(#viewas:not([hidden])) .act, body:has(#viewas:not([hidden])) #claim-btn, body:has(#viewas:not([hidden])) [data-claim] { opacity: .45; pointer-events: none; }
+.pair-code { font-size: 34px; font-weight: 700; letter-spacing: 6px; text-align: center; padding: 16px; margin: 12px 0; border-radius: 20px; background: var(--line-2); }
+.pair-login { margin-top: 34px; }
+#pair-btn { margin-left: 4px; }
+@media (max-width: 760px) { #pair-btn { display: none; } }
