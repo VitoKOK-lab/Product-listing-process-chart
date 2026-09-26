@@ -1042,3 +1042,32 @@ body:has(#viewas:not([hidden])) .act, body:has(#viewas:not([hidden])) #claim-btn
 .pair-login { margin-top: 34px; }
 #pair-btn { margin-left: 4px; }
 @media (max-width: 760px) { #pair-btn { display: none; } }
+
+/* =====================================================================
+   員工簡化版：只看自己今天要做什麼
+   ===================================================================== */
+#nav[hidden] { display: none; }
+.staff-home { max-width: 760px; margin: 0 auto; }
+.sh { font-size: 15px; margin: 18px 0 8px; color: var(--ink-2); display: flex; gap: 6px; align-items: baseline; }
+.sh .num { color: var(--ink-3); font-weight: 400; }
+.slist { display: flex; flex-direction: column; gap: 10px; }
+.scard { display: grid; grid-template-columns: 56px 1fr auto; gap: 12px; align-items: center; padding: 12px 14px; border-radius: 22px; cursor: pointer; }
+.scard.first { box-shadow: var(--shadow), inset 0 0 0 2px #FFC6E0; background: linear-gradient(180deg, #fff, #FFF3F9); }
+.sc-name { font-weight: 700; font-size: 16px; line-height: 1.35; }
+.sc-sub { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+.sc-go { font-size: 26px; color: var(--ink-3); padding: 0 6px; }
+.tag.first { background: linear-gradient(180deg, #FFB6D8, #F27AB5); color: #fff; font-weight: 700; }
+.staff-title { display: flex; gap: 12px; align-items: center; margin: 0 0 14px; }
+.staff-title h1 { font-size: 20px; margin: 0; }
+.big-btn { min-height: 48px; padding: 0 30px; font-size: 16px; }
+.linkbtn { border: 0; background: none; color: var(--ink-3); font-size: 13px; cursor: pointer; text-decoration: underline; padding: 4px; }
+details.hint { margin: 10px 0; }
+details.hint summary { cursor: pointer; color: var(--pink-deep, #C23D82); font-size: 14px; font-weight: 500; list-style: none; display: inline-block; padding: 4px 12px; border-radius: 999px; background: var(--line-2); }
+details.hint summary::-webkit-details-marker { display: none; }
+details.hint[open] summary { margin-bottom: 10px; }
+details.hint .guide ul { margin: 0; padding-left: 18px; line-height: 1.8; }
+@media (max-width: 760px) {
+  .scard { grid-template-columns: 48px 1fr auto; padding: 10px 12px; }
+  .scard .thumb { width: 48px; height: 48px; }
+  .scard .btn { min-height: 42px; }
+}

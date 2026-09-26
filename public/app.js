@@ -39,6 +39,8 @@ const member = (id) => S.members.find((m) => m.id === id);
 const stepLabel = (s) => S.stepLabel[s] || s;
 const pad = (n) => String(n).padStart(2, '0');
 const hasRole = (r) => !!S.me && S.me.roles.includes(r);
+// 員工（非管理員）只看自己的工作
+const staff = () => !!S.me && !S.me.is_admin;
 const isMkt = () => hasRole('marketing') || !!S.me?.is_admin;
 const roleName = (r) => S.roles[r] || r;
 
@@ -201,7 +203,7 @@ async function boot() {
   renderNav();
   renderMe();
   S.version = (await api('GET', '/api/version')).v;
-  if (!location.hash) location.hash = '#/overview';
+  if (!location.hash) location.hash = staff() ? '#/radar' : '#/overview';
   await render();
 }
 
@@ -246,6 +248,9 @@ function setViewAs(id) {
 }
 
 function renderNav() {
+  const nav = document.getElementById('nav');
+  nav.hidden = staff();
+  if (staff()) { nav.innerHTML = ''; return; }
   const canAdd = hasRole('lister') || S.me.is_admin;
   const items = [['overview', '全覽'], ['radar', '今天要做'], ...(canAdd ? [['new', '新增商品']] : []), ...(S.me.is_admin ? [['analysis', '成效分析']] : []), ['log', '紀錄'], ['help', '使用說明'], ...(S.me.is_admin ? [['settings', '設定']] : [])];
   document.getElementById('nav').innerHTML = items.map(([r, l]) => `<a href="#/${r}" data-route="${r}">${l}</a>`).join('');
@@ -320,7 +325,7 @@ function renderLogin() {
 
 // ---------- router ----------
 
-const currentRoute = () => (location.hash.replace(/^#\/?/, '') || 'overview').split('/');
+const currentRoute = () => (location.hash.replace(/^#\/?/, '') || (staff() ? 'radar' : 'overview')).split('/');
 window.addEventListener('hashchange', () => { if (S.me) render(); });
 
 async function render() {
@@ -328,8 +333,10 @@ async function render() {
   if (route !== 'radar' && document.querySelector('[data-view=radar]')) S.radarScroll = window.scrollY;
   document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.route === route || (route === 'p' && a.dataset.route === 'overview')));
   const views = { overview: viewOverview, radar: viewRadar, analysis: viewAnalysis, log: viewLog, settings: viewSettings, p: viewProduct, new: viewNew, help: viewHelp };
+  // 員工只有：今天要做、商品頁、（上架人員）新增商品
+  const allowed = staff() ? ['radar', 'p', ...(hasRole('lister') ? ['new'] : [])] : Object.keys(views);
   try {
-    await (views[route] || viewOverview)(arg);
+    await ((allowed.includes(route) && views[route]) || (staff() ? viewRadar : viewOverview))(arg);
   } catch (e) {
     if (!e.network) $app.innerHTML = `<p class="empty">${esc(e.message)}</p>`;
   }
@@ -373,7 +380,41 @@ function suggestWhy(it) {
   return it.status_code ? `${it.status_code} ${STATUS[it.status_code]}，依優先順序排第一` : '依優先順序排第一';
 }
 
+// 員工版今天要做：只有兩區（我手上的、可以接的），一張卡一個按鈕
+function simpleCard(it) {
+  const md = it.rush ? it.rush.date.slice(5).replace('-', '/') : '';
+  return `<div class="card scard ${it.suggest ? 'first' : ''}" data-href="#/p/${it.product_id}">
+    ${thumb(it.product_id, it.thumb)}
+    <div class="sc-main">
+      <div class="sc-name">${esc(it.name)}</div>
+      <div class="sc-sub">${stepChip(it.step)}${it.suggest ? '<span class="tag first">先做這件</span>' : ''}${it.rush ? `<span class="tag rush">插隊 ${esc(md)}</span>` : ''}${it.returned ? '<span class="tag return">被退回</span>' : ''}</div>
+      ${it.returned?.note ? `<div class="ret-note">${esc(it.returned.note)}</div>` : ''}
+    </div>
+    ${it.claimable ? `<button class="btn primary" data-claim="${it.product_id}" data-v="${it.version}" data-step="${it.step}">我來做</button>` : '<span class="sc-go">›</span>'}
+  </div>`;
+}
+
+async function viewStaffRadar() {
+  const r = await api('GET', '/api/radar?scope=me');
+  const mine = r.items.filter((i) => i.holder_id === S.me.id);
+  const pool = r.items.filter((i) => i.claimable);
+  S.radarKeys = [...mine, ...pool].map((i) => i.product_id);
+  $app.innerHTML = `
+    <div data-view="radar" class="staff-home">
+      <div class="page-head"><h1>今天要做</h1><span class="spacer"></span>${hasRole('lister') ? '<a class="btn small" href="#/new">＋ 新增商品</a>' : ''}</div>
+      ${mine.length ? `<h2 class="sh">我手上的 <span class="num">${mine.length}</span></h2><div class="slist">${mine.map(simpleCard).join('')}</div>` : ''}
+      ${pool.length ? `<h2 class="sh">可以接的 <span class="num">${pool.length}</span></h2><div class="slist">${pool.map(simpleCard).join('')}</div>` : ''}
+      ${!mine.length && !pool.length ? '<div class="card calm"><b>目前沒有工作</b></div>' : ''}
+    </div>`;
+  $app.querySelectorAll('[data-href]').forEach((c) => {
+    c.onclick = (e) => { if (!e.target.closest('a, button')) location.hash = c.dataset.href; };
+  });
+  $app.querySelectorAll('[data-claim]').forEach((b) => { b.onclick = () => claim(Number(b.dataset.claim), Number(b.dataset.v), b.dataset.step); });
+  if (S.radarScroll) { window.scrollTo(0, S.radarScroll); S.radarScroll = 0; }
+}
+
 async function viewRadar() {
+  if (staff()) return viewStaffRadar();
   const scope = S.radarScope;
   const r = await api('GET', `/api/radar?scope=${scope}`);
   S.radarKeys = r.items.map((i) => i.product_id);
@@ -906,7 +947,7 @@ function chosenStint(p) {
 
 function actionPanel(p) {
   const open = chosenStint(p);
-  const shop = (p.sl_url || p.link) ? `<a class="btn" href="${esc(p.sl_url || p.link)}" target="_blank" rel="noopener">開啟 Shopline 商品頁 ↗</a>` : '';
+  const shop = (p.sl_url || p.link) ? `<a class="btn" href="${esc(p.sl_url || p.link)}" target="_blank" rel="noopener">打開商品頁 ↗</a>` : '';
   if (p.delisted_at) {
     return `<div class="card action locked"><h2>已下架</h2><div class="sub">試算表裡已經沒有這件，${fmtTime(p.delisted_at)} 標成已下架。試算表加回來後，下次同步會自動恢復。</div></div>`;
   }
@@ -915,88 +956,81 @@ function actionPanel(p) {
   }
   if (!open) return '';
   const step = open.step;
-  const others = (p.opens || []).filter((s) => s.id !== open.id)
+  const others = staff() ? '' : (p.opens || []).filter((s) => s.id !== open.id)
     .map((s) => `<div class="muted parallel-line">同時進行：${esc(stepLabel(s.step))}・${s.member_id ? esc(member(s.member_id)?.name ?? '') : waitText(s.step)}</div>`).join('');
   const returned = open.returned ? `
-    <div class="returned"><b>被 ${esc(member(open.returned.by_id)?.name ?? '')} 退回</b>（${fmtTime(open.returned.at)}）
+    <div class="returned"><b>${esc(member(open.returned.by_id)?.name ?? '')} 退回</b>
       <div class="note">${esc(open.returned.note)}</div></div>` : '';
   const role = open.role;
   if (!open.member_id) {
     const can = hasRole(role);
     return `<div class="card action ${can ? 'mine' : 'locked'}">${returned}
-      <h2>「${esc(stepLabel(step))}」${waitText(step)}</h2>
-      <div class="sub">還沒有人接，按「我來做」就由你負責</div>
-      ${can ? `<button class="btn primary act" id="claim-btn">我來做</button> <span class="muted">認領後只會出現在你的待辦</span>`
-        : `<span class="muted">等${esc(roleName(role))}認領</span>`}
+      <h2>${esc(stepLabel(step))}</h2>
+      ${can ? '<button class="btn primary act big-btn" id="claim-btn">我來做</button>' : `<div class="sub">${waitText(step)}</div>`}
       ${others}
     </div>`;
   }
   if (open.member_id !== S.me.id) {
     const holder = member(open.member_id);
     return `<div class="card action locked">${returned}
-      <h2>目前在「${esc(stepLabel(step))}」</h2>
-      <div class="sub">負責人：${who(open.member_id)}</div>
-      <button class="btn disabled" disabled>只有 ${esc(holder?.name ?? '負責人')} 可以操作</button>
-      <span class="muted">需要催的話，在下方留言 @${esc(holder?.name ?? '')}</span>
+      <h2>${esc(stepLabel(step))}</h2>
+      <div class="sub">${esc(holder?.name ?? '')} 在做</div>
       ${others}
     </div>`;
   }
   const imgPending = step === 'listing' && (p.opens || []).some((o) => o.step === 'cutout');
-  const head = (title, sub) => `<div class="row" style="align-items:flex-start"><div style="flex:1"><h2>${title}</h2><div class="sub">${sub}</div></div>
-    <button class="btn small" id="release-btn" title="不做了，放回給其他${esc(roleName(role))}">放回待認領</button></div>${others}`;
+  const head = (title) => `<div class="row" style="align-items:center"><h2 style="flex:1;margin:0">${title}</h2>
+    <button class="linkbtn" id="release-btn" title="不做了，放回給其他${esc(roleName(role))}">放回</button></div>${others}`;
+  // 提示平常收起來，點「看提示」才展開
+  const hint = (html) => `<details class="hint"><summary>看提示</summary>${html}</details>`;
   const canReturn = step !== 'cutout' && open.step === p.step && !imgPending;
   const backTo = { listing: '美編（圖）', optimizing: '文案或圖', mkt_check: '任一步' }[step] || '';
   // 中間是自己這一步：往左退回上一步，往右完成交給下一步（行銷檢查往右就是完成）
   const foot = (btn, miss = '') => `<div class="flowbar">
-      <div class="fb-back">${canReturn ? `<button class="btn danger act" data-open-return>← 退回${esc(backTo)}</button>` : '<span class="muted">沒有上一步</span>'}</div>
-      <div class="fb-cur"><b>${esc(stepLabel(step))}</b><small>你現在這一步</small></div>
+      <div class="fb-back">${canReturn ? `<button class="btn danger act" data-open-return>← 退回${esc(backTo)}</button>` : ''}</div>
+      <div class="fb-cur"><b>${esc(stepLabel(step))}</b></div>
       <div class="fb-next">${btn}</div>
     </div>
     <div class="missing fb-miss" id="miss">${esc(miss)}</div>${canReturn ? returnForm(p) : ''}`;
   const toTxt = esc(nextHint(p, step));
   switch (step) {
     case 'cutout': {
-      return `<div class="card action mine">${returned}${head('做圖', '做好的圖直接上傳到 Shopline 商品頁，完成後按右邊的「完成」。')}
-        <div class="guide">
+      return `<div class="card action mine">${returned}${head('做圖')}
+        ${hint(`<div class="guide">
           <img src="/guide-photo.webp" data-full="/guide-photo.webp" alt="做圖教學示意圖" title="點一下放大">
-          <div>
-            <b>做圖提示（點左邊的圖放大看範例）</b>
-            <ul><li><b>每個商品都要有</b>：正面（主體設計）、側面（厚度、鑲嵌）、佩戴示意（手、頸、耳朵上的實際效果）</li>
-            <li>需要時加上：背面／底部、細節特寫</li>
-            <li>背景簡潔、光線充足、對焦清晰，不要過度濾鏡</li>
-            <li>尺寸比例用統一角度與光源；AI 生成要真實自然，不誇張</li>
-            <li>最短邊 ≥ 1200 px，JPG 或 PNG</li></ul>
-            <div class="row" style="margin-top:6px">${shop}</div>
-          </div>
-        </div>
+          <ul><li><b>一定要有</b>：正面、側面、佩戴示意</li>
+          <li>需要時加：背面／底部、細節特寫</li>
+          <li>背景簡潔、光線充足、對焦清晰</li>
+          <li>最短邊 ≥ 1200 px</li>
+          <li>做好直接上傳到 Shopline</li></ul>
+        </div>`)}
+        <div class="row" style="margin:10px 0">${shop}</div>
         ${foot(`<button class="btn primary act" id="complete-btn">完成 → ${toTxt}</button>`)}</div>`;
     }
     case 'listing': {
       const url = p.rename_pending ? '' : (p.sl_url || p.link || '');
       const rename = p.rename_pending ? `<div class="warnbox rename-box"><b>商品名稱要改，網址會跟著變</b>
-        <ol class="steps"><li>在 Shopline 改好商品名稱，複製新的商品網址。</li>
-        <li>把新網址貼到下面，按完成，會直接交回設計師。</li></ol>
-        <div class="muted">舊網址：${esc(p.link)}<br>網址以系統為主。廣告的 Excel 還是舊網址也不會出錯，但廣告人員要自己確認投放的網址。</div></div>` : '';
-      return `<div class="card action mine">${returned}${rename}${head('文案・上架', `文案直接寫在 Shopline，完成後在下面輸入商品網址。${imgPending ? '美編的圖還在做，可以先上架。' : '圖有問題就退回美編。'}`)}
-        <div class="sop">
+        <div>Shopline 改好名稱後，把<b>新網址</b>貼到下面。</div></div>` : '';
+      return `<div class="card action mine">${returned}${rename}${head('文案上架')}
+        ${hint(`<div class="sop">
           <b>商品文案第一階段檢查標準</b>
-          <p class="muted">第一階段文案不是寫美，而是把商品資料寫對、寫清楚、寫完整，讓後面的拍照、AI 生成、修圖、設計都可以直接執行，不需要猜。</p>
+          <p class="muted">把商品資料寫對、寫清楚、寫完整，不用寫得很美。</p>
           <ol class="sop-list">${COPY_SOP.map((t) => `<li>${esc(t)}</li>`).join('')}</ol>
-        </div>
-        <div class="row" style="margin-bottom:4px">${shop}</div>
-        <label class="field" style="margin-top:14px"><span>Shopline 商品網址</span><input type="url" id="sl-url" value="${esc(url)}" placeholder="https://"></label>
+        </div>`)}
+        <div class="row" style="margin:10px 0">${shop}</div>
+        <label class="field" style="margin-top:6px"><span>商品網址</span><input type="url" id="sl-url" value="${esc(url)}" placeholder="https://"></label>
         ${foot(`<button class="btn primary act" id="complete-btn">完成上架 → ${toTxt}</button>`)}</div>`;
     }
     case 'optimizing': {
-      return `<div class="card action mine">${returned}${head('優化・直接改 Shopline 線上頁面', `文案或圖有問題就退回。`)}
-        <div class="row" style="margin-bottom:12px">${shop}</div>
-        <label class="field" style="margin-top:14px"><span>改了什麼（必填）</span><textarea id="opt-note" placeholder="例：換主圖、補尺寸表、調整比例"></textarea></label>
+      return `<div class="card action mine">${returned}${head('優化')}
+        <div class="row" style="margin:10px 0">${shop}</div>
+        <label class="field" style="margin-top:6px"><span>改了什麼</span><textarea id="opt-note" placeholder="例：換主圖、補尺寸表、調整比例"></textarea></label>
         ${foot(`<button class="btn primary act" id="complete-btn" disabled>完成優化 → ${toTxt}</button>`, '請填寫改了什麼')}</div>`;
     }
     case 'mkt_check': {
       const lastOpt = [...p.stints].reverse().find((s) => s.step === 'optimizing' && s.end_note);
-      return `<div class="card action mine">${head('行銷檢查・投放前最後確認', `哪一步有問題就退回那一步，改好直接回到你這裡。`)}
-        <div class="row" style="margin-bottom:12px">${shop.replace('class="btn"', 'class="btn primary"')}</div>
+      return `<div class="card action mine">${head('檢查')}
+        <div class="row" style="margin:10px 0">${shop.replace('class="btn"', 'class="btn primary"')}</div>
         ${lastOpt ? `<div class="returned soft"><b>${esc(member(lastOpt.member_id)?.name ?? '')} 改了什麼</b><div class="note">${esc(lastOpt.end_note)}</div></div>` : ''}
         ${foot('<button class="btn go act" id="complete-btn">檢查通過・完成 ✓</button>')}</div>`;
     }
@@ -1122,6 +1156,15 @@ async function viewProduct(idStr) {
   const p = await api('GET', `/api/products/${id}`);
   const idx = STEP_ORDER.indexOf(p.step);
   const nextId = S.radarKeys[S.radarKeys.indexOf(id) + 1] || (S.radarKeys[0] !== id ? S.radarKeys[0] : null);
+  if (staff()) {
+    // 員工：只有工作卡片（行銷多一個插隊）
+    $app.innerHTML = `
+      <div class="page-head"><a href="#/radar" class="btn small">← 今天要做</a></div>
+      <div class="staff-title">${thumb(p.id, p.thumb_ver, 'md')}<h1>${esc(p.name)}</h1></div>
+      <div id="action">${actionPanel(p)}</div>
+      ${isMkt() ? rushBlock(p) : ''}`;
+    return bindProduct(p);
+  }
   $app.innerHTML = `
     <div class="page-head">
       <a href="#/overview" class="btn small">← 全覽</a>
@@ -1160,7 +1203,7 @@ function bindProduct(p) {
   const doAction = (action, extra = {}, doneMsg = null) => act(async () => {
     await api('POST', `/api/products/${id}/action`, { action, version: p.version, step: action === 'admin_advance' ? p.step : (cur?.step ?? p.step), ...extra });
     $app.querySelectorAll('[data-dirty]').forEach((el) => delete el.dataset.dirty);
-    if (doneMsg) { S.handled = { name: p.name, to: doneMsg, at: Date.now() }; location.hash = '#/radar'; }
+    if (doneMsg) { S.handled = { name: p.name, to: doneMsg, at: Date.now() }; if (staff()) toast(doneMsg); location.hash = '#/radar'; }
   }, doneMsg ? null : '已完成', doneMsg ? 'none' : 'refresh');
 
   const cb = document.getElementById('claim-btn');
@@ -1301,6 +1344,7 @@ function bindProduct(p) {
 
   // 留言
   const cf = document.getElementById('comment-form');
+  if (cf) {
   bindMentionPicker(cf.body);
   cf.onsubmit = (e) => {
     e.preventDefault();
@@ -1314,6 +1358,7 @@ function bindProduct(p) {
     });
   };
   cf.body.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) cf.requestSubmit(); });
+  }
   $app.querySelectorAll('[data-del-comment]').forEach((b) => {
     b.onclick = () => confirm('刪除這則留言？') && act(() => api('DELETE', `/api/comments/${b.dataset.delComment}`), '已刪除');
   });
