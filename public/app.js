@@ -205,7 +205,7 @@ async function boot() {
 
 function renderNav() {
   const canAdd = hasRole('lister') || S.me.is_admin;
-  const items = [['radar', '今天要做'], ['overview', '全覽'], ...(canAdd ? [['new', '新增商品']] : []), ...(S.me.is_admin ? [['analysis', '成效分析']] : []), ['log', '紀錄'], ...(S.me.is_admin ? [['settings', '設定']] : [])];
+  const items = [['radar', '今天要做'], ['overview', '全覽'], ...(canAdd ? [['new', '新增商品']] : []), ...(S.me.is_admin ? [['analysis', '成效分析']] : []), ['log', '紀錄'], ['help', '使用說明'], ...(S.me.is_admin ? [['settings', '設定']] : [])];
   document.getElementById('nav').innerHTML = items.map(([r, l]) => `<a href="#/${r}" data-route="${r}">${l}</a>`).join('');
 }
 
@@ -269,7 +269,7 @@ async function render() {
   const [route, arg] = currentRoute();
   if (route !== 'radar' && document.querySelector('[data-view=radar]')) S.radarScroll = window.scrollY;
   document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.route === route || (route === 'p' && a.dataset.route === 'overview')));
-  const views = { overview: viewOverview, radar: viewRadar, analysis: viewAnalysis, log: viewLog, settings: viewSettings, p: viewProduct, new: viewNew };
+  const views = { overview: viewOverview, radar: viewRadar, analysis: viewAnalysis, log: viewLog, settings: viewSettings, p: viewProduct, new: viewNew, help: viewHelp };
   try {
     await (views[route] || (S.me.is_admin ? viewOverview : viewRadar))(arg);
   } catch (e) {
@@ -353,6 +353,155 @@ async function viewRadar() {
   if (S.radarScroll) { window.scrollTo(0, S.radarScroll); S.radarScroll = 0; }
 }
 
+// ---------- 使用說明 ----------
+
+const HELP = {
+  flow: {
+    name: '整體流程',
+    html: `
+      <p class="lead">一件商品從廣告 Excel 開始，經過四個人的手，最後由行銷確認可以投放。每個人只要做好自己那一段，做完按「完成」，系統就會自動交給下一個人。</p>
+      <div class="help-flow">
+        <div class="hf-box hf-mkt"><b>行銷</b><span>在廣告 Excel 寫上商品名稱</span></div>
+        <div class="hf-arrow">→</div>
+        <div class="hf-pair">
+          <div class="hf-box hf-ed"><b>美編</b><span>做圖</span></div>
+          <div class="hf-box hf-li"><b>上架人員</b><span>寫文案、上架</span></div>
+          <small>兩個人同時開始</small>
+        </div>
+        <div class="hf-arrow">→</div>
+        <div class="hf-box hf-des"><b>設計師</b><span>優化商品頁</span></div>
+        <div class="hf-arrow">→</div>
+        <div class="hf-box hf-mkt"><b>行銷</b><span>投放前檢查（待審）</span></div>
+        <div class="hf-arrow">→</div>
+        <div class="hf-box hf-done"><b>完成</b><span>可以投放</span></div>
+      </div>
+      <h3>三個一定要知道的規則</h3>
+      <ol class="help-list">
+        <li><b>自己領工作</b>：系統不會指派，看到就按「我來做」。按了之後，這件只會出現在你的待辦。</li>
+        <li><b>做完按「完成 →」</b>：系統會自動交給下一個人，不用另外通知。</li>
+        <li><b>發現前面有問題按「← 退回」</b>：寫清楚哪裡不對，會回到做那一步的人手上；他改好會直接交回給你。</li>
+      </ol>
+      <h3>每天打開要看哪裡</h3>
+      <p>登入後第一頁就是「<b>今天要做</b>」。最上面那一張粉紅框是「建議你現在先做這件」，照順序做就對了：插隊的最先，其次是被退回的，再來依投放優先（A 投放中 → B 優先製作 → C 可投放 → D 待製作）。</p>`,
+  },
+  marketing: {
+    name: '行銷',
+    html: `
+      <p class="lead">你負責頭和尾：一開始決定要做哪些商品，最後確認能不能投放。</p>
+      <h3>開頭：在 Excel 寫上商品名稱</h3>
+      <ul class="help-list">
+        <li>在「廣告數據表」的「銷售型-投廣素材」寫上商品名稱、狀態、商品連結，就算開單完成。</li>
+        <li>設計師或管理員按「同步試算表」後，商品就會進到系統，美編和上架人員會自己去領。</li>
+        <li>很急的件：打開商品頁，在「插隊」選完成日期（最早明天），這件就會排到所有人的最前面。</li>
+      </ul>
+      <h3>結尾：檢查（待審）</h3>
+      <ul class="help-list">
+        <li>設計師優化完，這件會出現在你的「今天要做」，顯示「待審」。</li>
+        <li>按「我來做」→ 打開 Shopline 商品頁看一遍。</li>
+        <li>沒問題：按「檢查通過・完成 ✓」。</li>
+        <li>有問題：按「← 退回」，選是哪一步（做圖、文案上架、優化），寫哪裡不對。那個人改好後會直接回到你這裡。</li>
+      </ul>
+      <h3>要注意</h3>
+      <p class="warn-note">Shopline 的網址就是商品名稱。<b>商品改名稱，網址就會變</b>。系統會記住新網址（以系統為主），但你 Excel 裡投放用的網址要自己確認是新的，不然廣告會連到失效頁面。同步後如果看到紅字「幾件 Excel 還是舊網址」，就是要你去改。</p>`,
+  },
+  editor: {
+    name: '美編',
+    html: `
+      <p class="lead">你負責商品的圖。圖做好直接上傳到 Shopline，系統裡只要按「完成」。</p>
+      <h3>怎麼做</h3>
+      <ol class="help-list">
+        <li>打開「今天要做」，從最上面那件開始，按「我來做」。</li>
+        <li>照畫面上的做圖提示做圖（點教學圖可以放大看範例）：<b>正面、側面、佩戴示意</b>一定要有，需要時加背面、細節特寫。</li>
+        <li>把圖上傳到 Shopline 商品頁。</li>
+        <li>回系統按「完成 →」。</li>
+      </ol>
+      <h3>跟誰有關係</h3>
+      <ul class="help-list">
+        <li><b>工作從哪來</b>：行銷在 Excel 寫上商品，同步後就會出現。你和上架人員是同時開始的，不用等對方。</li>
+        <li><b>做完給誰</b>：上架人員也上架了，就交給設計師。</li>
+        <li><b>被退回</b>：設計師或行銷覺得圖不對、或還沒有圖，會退回給你。退回的件排在最前面，卡片上會寫原因，改好按完成就直接回到退你的人。</li>
+      </ul>
+      <p class="muted">順序：插隊 → 被退回 → 從試算表最下面往上做。</p>`,
+  },
+  lister: {
+    name: '上架人員',
+    html: `
+      <p class="lead">你負責文案和上架。文案直接寫在 Shopline，系統裡只要貼上商品網址。</p>
+      <h3>怎麼做</h3>
+      <ol class="help-list">
+        <li>打開「今天要做」，按「我來做」。</li>
+        <li>照「商品文案第一階段檢查標準」寫文案：<b>寫對、寫清楚、寫完整</b>，不用寫得很美，不要亂加沒確認過的賣點。</li>
+        <li>在 Shopline 上架。<b>不用等美編的圖</b>，可以先上架。</li>
+        <li>回系統貼上 Shopline 商品網址，按「完成上架 →」。</li>
+      </ol>
+      <h3>跟誰有關係</h3>
+      <ul class="help-list">
+        <li><b>工作從哪來</b>：行銷在 Excel 寫上商品，同步後出現。跟美編同時開始。</li>
+        <li><b>做完給誰</b>：交給設計師優化。</li>
+        <li><b>被退回</b>：設計師或行銷覺得文案不對，會退回給你，改好直接回到退你的人。</li>
+        <li><b>圖有問題</b>：可以按「← 退回」給美編。</li>
+      </ul>
+      <h3>改名稱要特別小心</h3>
+      <p class="warn-note">Shopline 網址就是商品名稱。<b>改名稱，網址就會變</b>。如果設計師退回寫「名稱要改」，改好名稱後一定要把<b>新的網址</b>貼回系統（貼舊的會被擋下來）。</p>
+      <h3>新增商品</h3>
+      <p>廣告 Excel 以外的商品，可以在選單「新增商品」自己建：輸入名稱和網址，首圖會自動抓。之後廣告人員如果把同一個網址加進 Excel，系統會當成同一件。</p>`,
+  },
+  designer: {
+    name: '設計師',
+    html: `
+      <p class="lead">你負責把商品頁優化到可以投放。直接改 Shopline 線上頁面，系統裡寫一句改了什麼。</p>
+      <h3>怎麼做</h3>
+      <ol class="help-list">
+        <li>打開「今天要做」，照最上面建議的那件做，按「我來做」。</li>
+        <li>打開 Shopline 商品頁優化。</li>
+        <li>回系統寫「改了什麼」，按「完成優化 →」。</li>
+      </ol>
+      <h3>跟誰有關係</h3>
+      <ul class="help-list">
+        <li><b>工作從哪來</b>：上架人員上架完就會交給你。有時候美編的圖還在做，卡片會標「圖還在做」。</li>
+        <li><b>發現問題</b>：按「← 退回」，選原因：
+          <ul><li><b>圖</b>（沒圖、圖不對）→ 退給美編，美編會優先處理。</li>
+          <li><b>文案</b> → 退給上架人員。如果是<b>商品名稱要改</b>，記得勾「名稱要改」，因為網址會跟著變。</li></ul>
+          改好後會直接回到你手上。</li>
+        <li><b>做完給誰</b>：交給行銷檢查（待審）。</li>
+      </ul>
+      <h3>同步按鈕</h3>
+      <p>全覽上方的「同步試算表」「同步首圖」只有你和管理員能按。行銷在 Excel 加了新商品後，按一次「同步試算表」，再按一次「同步首圖」。</p>`,
+  },
+  admin: {
+    name: '管理員',
+    html: `
+      <p class="lead">你看全局、處理卡住的件，不用自己做每一步。</p>
+      <ul class="help-list">
+        <li><b>全覽</b>：每件走到哪、誰在做、有沒有人接。</li>
+        <li><b>成效分析</b>：只有你看得到。各步驟平均花多久、誰比較慢、哪一關常沒人接、退件次數。員工畫面不會出現任何時間。</li>
+        <li><b>商品頁的管理員操作</b>：改派給別人、退回任一步（要寫原因）、直接推到下一關。</li>
+        <li><b>設定</b>：新增成員、勾選身分、重設裝置（換手機或選錯名字時）、上班時間與假日。</li>
+      </ul>`,
+  },
+  faq: {
+    name: '常見問題',
+    html: `
+      <ul class="help-list">
+        <li><b>按錯「我來做」怎麼辦？</b>商品頁工作卡片的右上角有「放回待認領」。</li>
+        <li><b>看不到完成或退回的按鈕？</b>要先按「我來做」認領，按鈕只給認領的人。</li>
+        <li><b>換手機、清掉瀏覽器資料後進不去？</b>請管理員到設定幫你「重設綁定」，再重新選一次名字。</li>
+        <li><b>有事要找某個人？</b>在商品頁留言輸入 @ 加名字，對方的待辦會出現提醒。</li>
+        <li><b>手機可以用嗎？</b>可以，用手機瀏覽器打開同一個網址就好。</li>
+      </ul>`,
+  },
+};
+
+function viewHelp(tab) {
+  const roleTab = ['marketing', 'editor', 'lister', 'designer'].find((r) => hasRole(r));
+  const cur = HELP[tab] ? tab : (S.me.is_admin && !roleTab ? 'flow' : roleTab || 'flow');
+  const order = ['flow', 'marketing', 'editor', 'lister', 'designer', 'admin', 'faq'];
+  $app.innerHTML = `
+    <div class="page-head"><h1>使用說明</h1></div>
+    <div class="seg help-tabs">${order.map((k) => `<a href="#/help/${k}" class="${k === cur ? 'on' : ''}">${esc(HELP[k].name)}${k === roleTab ? '<small>（你）</small>' : ''}</a>`).join('')}</div>
+    <div class="card section help">${HELP[cur].html}</div>`;
+}
+
 // ---------- 新增商品（廣告數據表以外） ----------
 
 async function viewNew() {
@@ -428,6 +577,7 @@ function laneRow(r) {
   }).join('');
   return `<div class="lane-row ${r.cells.some(isMineCell) ? 'row-mine' : ''}" data-href="#/p/${r.id}">
     <div class="lane-name">${thumb(r.id, r.thumb, 'sm')}<div class="ln-text">${statusBadge(r)}${shopName(r.name, r.link)}</div></div>
+    <div class="lane-mobile">${r.done ? stepChip('done') : r.cells.filter((c) => c.state === 'current').map((c) => `${stepChip(c.step)}<span class="${c.waiting ? 'muted' : ''}">${esc(c.waiting ? waitText(c.step) : member(c.holder_id)?.name ?? '')}</span>`).join('') || stepChip(r.step)}</div>
     <div class="lane">
       <div class="rail" style="left:${at(0)}%;right:${100 - at(n - 1)}%"></div>
       <div class="rail-fill" style="left:${at(0)}%;width:${fillW}%"></div>
