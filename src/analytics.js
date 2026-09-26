@@ -228,7 +228,7 @@ export function buildRadar({ products, allProducts, stints, mentions, me, meRole
       tags.push({ t: `比平均慢 ${c.diff}h`, k: c.level === 'very' ? 'red' : 'yellow' });
       if (group === 'mine') group = 'slow';
     }
-    if (!s.member_id) tags.push({ t: '等人認領', k: 'wait' });
+    if (!s.member_id) tags.push({ t: s.step === 'mkt_check' ? '待審' : '等人認領', k: 'wait' });
     if (s.step === 'optimizing' && openCut.has(p.id)) tags.push({ t: '圖還在做', k: 'wait' });
     if (s.step === 'listing' && p.rename_pending) tags.push({ t: '名稱要改・網址會變', k: 'return' });
     items.set(`${s.product_id}:${s.id}`, {

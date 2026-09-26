@@ -61,6 +61,8 @@ function avatar(m, size) {
 }
 const who = (id) => { const m = member(id); return `<span class="who">${avatar(m)}${esc(m?.name ?? '—')}</span>`; };
 const stepChip = (s) => `<span class="step-chip" style="background:${STEP_COLOR[s]}">${esc(stepLabel(s))}</span>`;
+// 沒人接時的說法：行銷檢查叫「待審」，其他叫「等人認領」
+const waitText = (step) => (step === 'mkt_check' ? '待審' : '等人認領');
 const rolesText = (m) => (m?.roles || []).map(roleName).join('、');
 const thumb = (id, ver, cls = '') => ver
   ? `<img class="thumb ${cls}" src="/api/thumbs/${id}?v=${ver}" alt="" loading="lazy">`
@@ -289,7 +291,7 @@ function radarCard(it, hero = false) {
           <div class="tags">${stepChip(it.step)}${tags}</div>
           ${it.returned?.note ? `<div class="ret-note"><b>${esc(member(it.returned.by)?.name ?? '')} 退回：</b>${esc(it.returned.note)}</div>` : ''}
           <div class="meta">
-            ${S.radarScope === 'all' ? (it.holder_id ? who(it.holder_id) : '<span class="tag wait">等人認領</span>') : ''}
+            ${S.radarScope === 'all' ? (it.holder_id ? who(it.holder_id) : `<span class="tag wait">${waitText(it.step)}</span>`) : ''}
             ${time}
             ${it.mention_id ? `<button class="btn small" data-ack="${it.mention_id}">知道了</button>` : ''}
             ${it.claimable ? `<span class="spacer"></span><button class="btn small primary" data-claim="${it.product_id}" data-v="${it.version}" data-step="${it.step}">我來做</button>` : ''}
@@ -353,10 +355,10 @@ function isMineCell(c) {
 
 function cellTip(c) {
   if (c.held == null) {
-    const who2 = c.state === 'current' ? (c.waiting ? '等人認領' : member(c.holder_id)?.name) : member(c.holders[c.holders.length - 1] ?? c.owner)?.name;
+    const who2 = c.state === 'current' ? (c.waiting ? waitText(c.step) : member(c.holder_id)?.name) : member(c.holders[c.holders.length - 1] ?? c.owner)?.name;
     return `${stepLabel(c.step)}・${who2 ?? (c.state === 'future' ? '還沒輪到' : '—')}${c.rounds > 1 ? `\n退回重做，第 ${c.rounds} 輪` : ''}`;
   }
-  const person = c.state === 'current' ? (c.waiting ? '等人認領' : member(c.holder_id)?.name) : member(c.holders[c.holders.length - 1] ?? c.owner)?.name;
+  const person = c.state === 'current' ? (c.waiting ? waitText(c.step) : member(c.holder_id)?.name) : member(c.holders[c.holders.length - 1] ?? c.owner)?.name;
   const lines = [`${stepLabel(c.step)}・${person ?? '還沒輪到'}`];
   if (c.held) lines.push(`工作 ${fmtWork(c.work)}（認領後）・總共 ${fmtWork(c.held)}${c.pool ? `，沒人接 ${fmtWork(c.pool)}` : ''}`);
   lines.push(c.avg != null ? `團隊平均工作 ${fmtWork(c.avg)}` : '團隊平均：資料還不夠（至少 3 件）');
@@ -375,7 +377,7 @@ function laneRow(r) {
     const mine = isMineCell(c);
     const tip = esc(cellTip(c));
     if (c.state === 'current' && !r.done) {
-      const person = c.waiting ? '等人認領' : (member(c.holder_id)?.name ?? '—');
+      const person = c.waiting ? waitText(c.step) : (member(c.holder_id)?.name ?? '—');
       const time = !S.showTime || c.held == null ? '' : c.waiting ? `沒人接 ${fmtWork(c.pool)}` : `${fmtWork(c.work)}${c.avg != null ? ` / 均 ${fmtWork(c.avg)}` : ''}`;
       const rushHot = r.rush && (r.rush.urgent || r.rush.overdue);
       const lv = S.showTime ? c.level : 'ok';
@@ -667,7 +669,7 @@ function actionPanel(p) {
   if (!open) return '';
   const step = open.step;
   const others = (p.opens || []).filter((s) => s.id !== open.id)
-    .map((s) => `<div class="muted parallel-line">同時進行：${esc(stepLabel(s.step))}・${s.member_id ? esc(member(s.member_id)?.name ?? '') : '等人認領'}</div>`).join('');
+    .map((s) => `<div class="muted parallel-line">同時進行：${esc(stepLabel(s.step))}・${s.member_id ? esc(member(s.member_id)?.name ?? '') : waitText(s.step)}</div>`).join('');
   const returned = open.returned ? `
     <div class="returned"><b>被 ${esc(member(open.returned.by_id)?.name ?? '')} 退回</b>（${fmtTime(open.returned.at)}）
       <div class="note">${esc(open.returned.note)}</div></div>` : '';
@@ -675,7 +677,7 @@ function actionPanel(p) {
   if (!open.member_id) {
     const can = hasRole(role);
     return `<div class="card action ${can ? 'mine' : 'locked'}">${returned}
-      <h2>「${esc(stepLabel(step))}」等人認領</h2>
+      <h2>「${esc(stepLabel(step))}」${waitText(step)}</h2>
       <div class="sub">還沒有人接，按「我來做」就由你負責</div>
       ${can ? `<button class="btn primary act" id="claim-btn">我來做</button> <span class="muted">認領後只會出現在你的待辦</span>`
         : `<span class="muted">等${esc(roleName(role))}認領</span>`}
@@ -763,7 +765,7 @@ function timelineBlock(p) {
   const END = { complete: '完成', pass: '檢查通過', return: '退回', claim: '有人認領', release: '放回', reassign: '改派', admin: '管理員推進', delisted: '下架' };
   return `<div class="card section"><h2>流程紀錄</h2><ul class="timeline">
     ${items.map((s) => `<li class="${s.start_reason === 'return' ? 'ret' : ''} ${s.ended_at == null ? 'open' : ''}">
-        <b>${esc(stepLabel(s.step))}</b>・${s.member_id ? esc(member(s.member_id)?.name ?? '—') : '<span class="muted">等人認領</span>'}
+        <b>${esc(stepLabel(s.step))}</b>・${s.member_id ? esc(member(s.member_id)?.name ?? '—') : `<span class="muted">${waitText(s.step)}</span>`}
         <span class="muted">${fmtTime(s.started_at)} → ${s.ended_at ? fmtTime(s.ended_at) + ' ' + (END[s.end_reason] || '') : '進行中'}</span>
         ${s.start_reason === 'return' ? `<div class="note"><b>被 ${esc(member(s.by_id)?.name ?? '')} 退回</b>\n${esc(s.note)}</div>` : ''}
         ${s.start_reason === 'reassign' ? `<div class="muted">由 ${esc(member(s.by_id)?.name ?? '')} 改派</div>` : ''}
@@ -844,7 +846,7 @@ function adminBar(p) {
   const sel = (open) => {
     const ms = S.members.filter((m) => m.active && m.roles.includes(open.role));
     return `<label class="row" style="gap:6px"><span class="muted">改派${esc(stepLabel(open.step))}</span><select data-reassign="${open.step}" style="width:auto">
-      <option value="">等人認領</option>${ms.map((m) => `<option value="${m.id}" ${m.id === open.member_id ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select></label>`;
+      <option value="">${waitText(open.step)}</option>${ms.map((m) => `<option value="${m.id}" ${m.id === open.member_id ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select></label>`;
   };
   return `<div class="card admin-bar"><span class="muted">管理員操作</span>
     ${(p.opens || []).map(sel).join('')}
@@ -990,7 +992,7 @@ function bindProduct(p) {
   // 管理員
   $app.querySelectorAll('[data-reassign]').forEach((ra) => {
     ra.onchange = () => {
-      const name = ra.value ? ra.options[ra.selectedIndex].text : '等人認領';
+      const name = ra.value ? ra.options[ra.selectedIndex].text : waitText(ra.dataset.reassign);
       if (!confirm(`改派給「${name}」？`)) { delete ra.dataset.dirty; return refresh(); }
       act(() => api('POST', `/api/products/${id}/action`, { action: 'reassign', version: p.version, step: ra.dataset.reassign, member_id: Number(ra.value) || null }), '已改派');
     };
