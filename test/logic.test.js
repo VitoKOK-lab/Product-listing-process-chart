@@ -36,18 +36,21 @@ test('沒人認領的等待時間算在這一步，但另外記', () => {
   assert.equal(t.rounds, 1); // 認領不算新的一輪
 });
 
-test('團隊平均：只用走完這一步的商品，少於 3 件不比', () => {
+test('團隊平均：用認領後的工作時間，只用走完這一步的商品，少於 3 件不比', () => {
   const stints = [];
   const products = [];
   for (let i = 1; i <= 3; i++) {
-    stints.push(st(i, 'open', 1, at(MON, 9), at(MON, 9 + i), 'create'));
-    products.push({ id: i, step: 'cutout' });
+    stints.push(st(i, 'cutout', null, at(MON, 9), at(MON, 10), 'create')); // 空等 1h 不算
+    stints.push(st(i, 'cutout', 1, at(MON, 10), at(MON, 10 + i), 'claim'));
+    products.push({ id: i, step: 'listing' });
   }
-  products.push({ id: 4, step: 'open' });
-  stints.push(st(4, 'open', 1, at(MON, 9), null, 'create'));
+  products.push({ id: 4, step: 'cutout' });
+  stints.push(st(4, 'cutout', 1, at(MON, 9), null, 'claim'));
   const avgs = teamAverages(products, stepTimes(stints, stintHours(stints, at(MON, 18), cfg)));
-  assert.equal(avgs.open.avg, 2); // (1+2+3)/3，進行中的第 4 件不算
-  assert.equal(avgs.cutout.avg, null);
+  assert.equal(avgs.cutout.avg, 2); // 工作 (1+2+3)/3，進行中的第 4 件不算
+  assert.equal(avgs.cutout.total_avg, 3); // 含空等
+  assert.equal(avgs.cutout.pool_avg, 1);
+  assert.equal(avgs.listing.avg, null);
 });
 
 test('跟平均比：1.5 倍偏慢、2 倍很慢、差不到半小時不算', () => {
@@ -86,24 +89,28 @@ test('退件算在上一次做這一步的人身上', () => {
   assert.equal(currentReturn(stints, stints[2]).note, '去背有白邊');
 });
 
-test('全覽：進行中的步驟只在比平均慢時才算', () => {
+test('全覽：做圖和文案同時進行；進行中的步驟只在比平均慢時才算', () => {
   const stints = [];
   const products = [];
   for (let i = 1; i <= 3; i++) {
-    stints.push(st(i, 'open', 1, at(MON, 9), at(MON, 11), 'create'));
-    stints.push(st(i, 'cutout', 2, at(MON, 11), at(MON, 12)));
-    products.push({ id: i, step: 'listing', status_code: 'A' });
-    stints.push(st(i, 'listing', null, at(MON, 12), null));
+    stints.push(st(i, 'cutout', 2, at(MON, 9), at(MON, 10), 'claim'));
+    stints.push(st(i, 'listing', 3, at(MON, 9), at(MON, 11), 'claim'));
+    products.push({ id: i, step: 'optimizing', status_code: 'A' });
+    stints.push(st(i, 'optimizing', 8, at(MON, 11), null));
   }
   products.push({ id: 9, step: 'cutout', status_code: 'B' });
-  stints.push(st(9, 'open', 1, at(MON, 9), at(MON, 10), 'create'));
-  stints.push(st(9, 'cutout', null, at(MON, 10), null));
+  stints.push(st(9, 'cutout', null, at(MON, 9), at(MON, 10), 'create'));
+  stints.push(st(9, 'cutout', 2, at(MON, 10), null, 'claim'));
+  stints.push(st(9, 'listing', null, at(MON, 9), null, 'create'));
   const { rows } = overviewRows({ products, allProducts: products, stints, now: at(MON, 15), cfg, settings });
   const r9 = rows.find((r) => r.id === 9);
-  assert.equal(r9.cells[0].diff, -0.8); // 開單 1h，平均 (2+2+2+1)/4
-  assert.equal(r9.cells[1].diff, 4); // 去背已 5h，平均 1h
-  assert.equal(r9.cells[1].level, 'very');
+  assert.equal(r9.cells[0].state, 'current');
+  assert.equal(r9.cells[1].state, 'current'); // 文案同時進行
+  assert.equal(r9.cells[1].parallel, true);
   assert.equal(r9.cells[1].waiting, true);
+  assert.equal(r9.cells[0].work, 5); // 認領後 5h，空等 1h 不算
+  assert.equal(r9.cells[0].diff, 4);
+  assert.equal(r9.cells[0].level, 'very');
   assert.equal(rows[0].status_code, 'A');
 });
 

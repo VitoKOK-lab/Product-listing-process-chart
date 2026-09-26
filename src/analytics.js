@@ -2,10 +2,11 @@
 import { workHoursBetween, localToEpoch } from './worktime.js';
 import { STATUS_RANK } from './sheet.js';
 
-// 流程：開單 → 去背 → 上架 → 優化 → 行銷檢查 → 已完成
+// 流程：行銷在試算表寫上商品名稱（= 開單）→ 美編做圖、上架人員寫文案（同時進行）→ 上架 → 優化 → 行銷檢查 → 已完成
+// open 只留給舊資料；新商品從 cutout + listing 同時開始
 export const STEPS = ['open', 'cutout', 'listing', 'optimizing', 'mkt_check', 'done'];
-export const FLOW = ['open', 'cutout', 'listing', 'optimizing', 'mkt_check'];
-export const STEP_LABEL = { open: '開單', cutout: '去背', listing: '上架', optimizing: '優化', mkt_check: '行銷檢查', done: '已完成' };
+export const FLOW = ['cutout', 'listing', 'optimizing', 'mkt_check'];
+export const STEP_LABEL = { open: '開單', cutout: '做圖', listing: '文案上架', optimizing: '優化', mkt_check: '行銷檢查', done: '已完成' };
 export const STEP_ROLE = { open: 'marketing', cutout: 'editor', listing: 'lister', optimizing: 'designer', mkt_check: 'marketing' };
 export const MIN_SAMPLE = 3; // 同一步至少 3 件走完，才拿來比團隊平均
 
@@ -22,17 +23,19 @@ export function stintHours(stints, now, cfg) {
   return out;
 }
 
-// 每件商品每一步：累計上班時數（含沒人認領的等待）、其中等待時數、第幾輪、經手的人
+// 每件商品每一步：總時數（含沒人認領的等待）、工作時數（認領後）、等待時數、第幾輪、經手的人
+// 成效用工作時數比；總時數用來看哪一關沒人接
 export function stepTimes(stints, hours) {
   const out = new Map();
   const sorted = [...stints].sort((a, b) => a.started_at - b.started_at || a.id - b.id);
   for (const s of sorted) {
     const byStep = out.get(s.product_id) || out.set(s.product_id, {}).get(s.product_id);
-    const e = (byStep[s.step] ||= { held: 0, pool: 0, rounds: 0, open: false, holders: [], imported: false });
+    const e = (byStep[s.step] ||= { held: 0, work: 0, pool: 0, rounds: 0, open: false, holders: [], imported: false });
     if (s.start_reason === 'import') e.imported = true;
     const h = hours.get(s.id) || 0;
     e.held += h;
-    if (!s.member_id) e.pool += h;
+    if (s.member_id) e.work += h;
+    else e.pool += h;
     if (VISIT_START.has(s.start_reason)) e.rounds++;
     if (s.ended_at == null) e.open = true;
     if (s.member_id && !e.holders.includes(s.member_id)) e.holders.push(s.member_id);
@@ -46,15 +49,20 @@ export function teamAverages(products, times) {
   const mean = (a) => a.reduce((x, y) => x + y, 0) / a.length;
   for (const step of FLOW) {
     const vals = [];
+    const totals = [];
     const pools = [];
     for (const p of products) {
       const e = times.get(p.id)?.[step];
       if (!e || e.open || e.imported || stepIdx(p.step) <= stepIdx(step)) continue;
-      vals.push(e.held);
+      vals.push(e.work);
+      totals.push(e.held);
       pools.push(e.pool);
     }
     const ok = vals.length >= MIN_SAMPLE;
-    out[step] = { avg: ok ? round1(mean(vals)) : null, pool_avg: ok ? round1(mean(pools)) : null, n: vals.length };
+    out[step] = {
+      avg: ok ? round1(mean(vals)) : null, total_avg: ok ? round1(mean(totals)) : null,
+      pool_avg: ok ? round1(mean(pools)) : null, n: vals.length,
+    };
   }
   return out;
 }
@@ -134,7 +142,9 @@ function ctx({ allProducts, stints, now, cfg }) {
 // 全覽：每件商品一條賽道，每一步跟團隊平均比
 export function overviewRows({ products, allProducts, stints, now, cfg, settings }) {
   const { times, avgs } = ctx({ allProducts, stints, now, cfg });
-  const openBy = new Map(stints.filter((s) => s.ended_at == null).map((s) => [s.product_id, s]));
+  // 一件商品可能同時有兩段在進行（做圖、文案）
+  const openBy = new Map();
+  for (const s of stints) if (s.ended_at == null) (openBy.get(s.product_id) || openBy.set(s.product_id, {}).get(s.product_id))[s.step] = s;
   const returnsBy = new Map();
   for (const e of returnEvents(stints)) returnsBy.set(e.product_id, (returnsBy.get(e.product_id) || 0) + 1);
   const LV = { ok: 0, slow: 1, very: 2 };
@@ -142,25 +152,27 @@ export function overviewRows({ products, allProducts, stints, now, cfg, settings
   const rows = products.map((p) => {
     const t = times.get(p.id) || {};
     const done = p.step === 'done';
-    const cur = done ? FLOW.length : FLOW.indexOf(p.step);
-    const open = openBy.get(p.id) || null;
+    const cur = done ? FLOW.length : Math.max(0, FLOW.indexOf(p.step));
+    const opens = openBy.get(p.id) || {};
     let diff = 0;
     let level = 'ok';
     const cells = FLOW.map((step, i) => {
       const e = t[step];
-      const state = i < cur ? 'done' : i === cur ? 'current' : 'future';
+      const open = opens[step] || null;
+      const state = open ? 'current' : i < cur ? 'done' : 'future';
       const held = round1(e?.held || 0);
+      const work = round1(e?.work || 0);
       const cell = {
-        step, state, held, pool: round1(e?.pool || 0), rounds: e?.rounds || 0, holders: e?.holders || [],
-        avg: avgs[step].avg, diff: null, level: 'ok', holder_id: null, waiting: false,
-        owner: step === 'open' || step === 'mkt_check' ? p.marketer_id ?? null : null,
+        step, state, held, work, pool: round1(e?.pool || 0), rounds: e?.rounds || 0, holders: e?.holders || [],
+        avg: avgs[step].avg, total_avg: avgs[step].total_avg, diff: null, level: 'ok', holder_id: null, waiting: false,
+        parallel: !!open && step !== p.step, owner: step === 'mkt_check' ? p.marketer_id ?? null : null,
       };
-      if (state === 'current' && open) {
+      if (open) {
         cell.holder_id = open.member_id ?? null;
         cell.waiting = !open.member_id;
       }
       if (e && state !== 'future' && !e.imported) {
-        const c = compare(held, cell.avg);
+        const c = compare(work, cell.avg);
         // 進行中的步驟只在比平均慢時才算，不提前算快
         if (state === 'done' || (c.diff ?? 0) > 0) {
           cell.diff = c.diff;
@@ -183,7 +195,8 @@ export function overviewRows({ products, allProducts, stints, now, cfg, settings
 }
 
 // 我的待辦：插隊急件 → 被退回／@我 → 比平均慢 → 我手上 → 等人認領
-export function buildRadar({ products, allProducts, stints, mentions, me, meRoles = [], scope, now, cfg, settings }) {
+// showTime = false：員工看不到任何時間與比平均（只有管理員看得到）
+export function buildRadar({ products, allProducts, stints, mentions, me, meRoles = [], scope, now, cfg, settings, showTime = true }) {
   const { times, avgs } = ctx({ allProducts, stints, now, cfg });
   const prodById = new Map(products.map((p) => [p.id, p]));
   const items = new Map();
@@ -194,8 +207,8 @@ export function buildRadar({ products, allProducts, stints, mentions, me, meRole
     const mine = s.member_id === me;
     const claimable = !s.member_id && meRoles.includes(s.role);
     const st = times.get(p.id)?.[s.step];
-    const held = round1(st?.held || 0);
-    const c = st?.imported ? { diff: null, level: 'ok' } : compare(held, avgs[s.step]?.avg);
+    const held = round1(st?.work || 0);
+    const c = st?.imported || !showTime ? { diff: null, level: 'ok' } : compare(held, avgs[s.step]?.avg);
     const rush = rushInfo(p, now, cfg, settings);
     if (scope === 'me' && !mine && !claimable) continue;
     if (scope === 'all' && !(c.level !== 'ok' || rush?.urgent || rush?.overdue)) continue;
@@ -215,10 +228,13 @@ export function buildRadar({ products, allProducts, stints, mentions, me, meRole
       if (group === 'mine') group = 'slow';
     }
     if (!s.member_id) tags.push({ t: '等人認領', k: 'wait' });
+    if (s.step === 'listing' && p.step === 'cutout') tags.push({ t: '圖還在做', k: 'wait' });
     if (s.step === 'listing' && p.rename_pending) tags.push({ t: '名稱要改・網址會變', k: 'return' });
     items.set(`${s.product_id}:${s.id}`, {
       key: `${s.product_id}:${s.id}`, product_id: p.id, name: p.name, link: p.link || '', step: s.step, role: s.role,
-      holder_id: s.member_id ?? null, claimable, started_at: s.started_at, held_h: held, avg_h: avgs[s.step]?.avg ?? null,
+      holder_id: s.member_id ?? null, claimable, started_at: s.started_at,
+      held_h: showTime ? held : null, wait_h: showTime ? round1(st?.pool || 0) : null, avg_h: showTime ? avgs[s.step]?.avg ?? null : null,
+      blocked: s.step === 'listing' && p.step === 'cutout',
       level: c.level, group, tags, returned: r ? { note: r.note, by: r.by_id } : null, rush,
       status_code: p.status_code || '', rush_date: p.rush_date ?? null, thumb: p.thumb_ver || 0, version: p.version,
       sheet_row: p.sheet_row ?? null,

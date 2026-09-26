@@ -209,8 +209,9 @@ async function getProduct(db, id) {
   return p;
 }
 
-async function openStint(db, productId) {
-  return db.prepare('SELECT * FROM stints WHERE product_id = ? AND ended_at IS NULL ORDER BY id DESC LIMIT 1').bind(productId).first();
+// 一件商品可能同時有兩段在進行（做圖、文案），所以要指定哪一步
+async function openStint(db, productId, step) {
+  return db.prepare('SELECT * FROM stints WHERE product_id = ? AND step = ? AND ended_at IS NULL ORDER BY id DESC LIMIT 1').bind(productId, step).first();
 }
 
 const ACTION_TEXT = {
@@ -236,7 +237,7 @@ async function memberHasRole(db, memberId, role) {
   return !!r;
 }
 
-// 輪到某一步時交給誰：開單、行銷檢查 → 開單的行銷；其他 → 上次做這一步的人；設計師只有一位就直接給；都沒有就放著等人認領
+// 輪到某一步時交給誰：行銷檢查 → 負責的行銷；其他 → 上次做這一步的人（退回、改好交回）；都沒有就放著等人認領
 async function holderFor(db, p, step) {
   if (step === 'open' || step === 'mkt_check') {
     return (await memberHasRole(db, p.marketer_id, 'marketing')) ? p.marketer_id : null;
@@ -244,22 +245,17 @@ async function holderFor(db, p, step) {
   const last = await db.prepare('SELECT member_id FROM stints WHERE product_id = ? AND step = ? AND member_id IS NOT NULL ORDER BY started_at DESC, id DESC LIMIT 1')
     .bind(p.id, step).first();
   if (last && await memberHasRole(db, last.member_id, STEP_ROLE[step])) return last.member_id;
-  if (step === 'optimizing') {
-    const { results } = await db.prepare(`SELECT mr.member_id FROM member_roles mr JOIN members m ON m.id = mr.member_id
-      WHERE mr.role = 'designer' AND m.active = 1`).all();
-    if (results.length === 1) return results[0].member_id;
-  }
-  return null;
+  return null; // 第一次輪到：不預設給人，自己認領
 }
 
 // 換關：關閉目前這段、開下一段、更新商品、寫紀錄
-function transition(db, p, open, me, { endReason, endNote = null, to, member = null, startReason = 'advance', note = null, updates = {}, action, detail = '' }) {
+function transition(db, p, open, me, { endReason, endNote = null, to, member = null, startReason = 'advance', note = null, updates = {}, action, detail = '', skipStint = false }) {
   const t = now();
   const stmts = [];
   if (open) {
     stmts.push(db.prepare('UPDATE stints SET ended_at = ?, end_reason = ?, end_note = COALESCE(?, end_note) WHERE id = ?').bind(t, endReason, endNote, open.id));
   }
-  if (to && to !== 'done') {
+  if (to && to !== 'done' && !skipStint) {
     stmts.push(db.prepare(`INSERT INTO stints (product_id, step, member_id, role, started_at, start_reason, note, by_id)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).bind(p.id, to, member, STEP_ROLE[to], t, startReason, note, me.id));
   }
@@ -464,7 +460,14 @@ route('GET', '/api/overview', async ({ db, me, url, settings }) => {
     delisted: (p) => !!p.delisted_at,
   }[f] || ((p) => !p.delisted_at && p.status_code === f);
   const { rows, avgs } = overviewRows({ products: d.all.filter(pick), allProducts: d.all, stints: d.stints, now: t, cfg: cfgOf(settings), settings });
-  return json({ rows, avgs, counts, filter: f, now: t });
+  if (!me.is_admin) {
+    // 員工只看進度，不看時間
+    for (const r of rows) {
+      r.diff = null; r.level = 'ok';
+      for (const c of r.cells) Object.assign(c, { held: null, work: null, pool: null, avg: null, total_avg: null, diff: null, level: 'ok' });
+    }
+  }
+  return json({ rows, avgs: me.is_admin ? avgs : null, counts, filter: f, now: t, show_time: !!me.is_admin });
 });
 
 // ---------- 我的待辦 ----------
@@ -475,33 +478,11 @@ route('GET', '/api/radar', async ({ db, me, url, settings }) => {
   const d = await loadAll(db);
   return json(buildRadar({
     products: d.live, allProducts: d.all, stints: d.stints, mentions: d.mentions, me: me.id, meRoles: me.roles,
-    scope, now: now(), cfg: cfgOf(settings), settings,
+    showTime: !!me.is_admin, scope, now: now(), cfg: cfgOf(settings), settings,
   }));
 });
 
 // ---------- 商品 ----------
-
-// 手動開單（試算表以外的商品）
-route('POST', '/api/products', async ({ db, request, me }) => {
-  requireMe(me);
-  if (!isMkt(me)) throw new HttpError(403, '只有行銷或管理員可以開單');
-  const b = await body(request);
-  const name = text(b.name, '商品名稱', 200);
-  const link = String(b.link ?? '').trim().slice(0, 500);
-  if (link && !/^https?:\/\//.test(link)) throw new HttpError(400, '商品連結需以 http 開頭');
-  const code = ['A', 'B', 'C', 'D'].includes(b.status_code) ? b.status_code : '';
-  const t = now();
-  const mine = hasRole(me, 'marketing') ? me.id : null;
-  const res = await db.prepare(`INSERT INTO products (name, link, source, status_code, step, marketer_id, created_at, updated_at)
-    VALUES (?, ?, 'manual', ?, 'open', ?, ?, ?)`).bind(name, link, code, mine, t, t).run();
-  const id = res.meta.last_row_id;
-  await db.batch([
-    db.prepare(`INSERT INTO stints (product_id, step, member_id, role, started_at, start_reason, by_id) VALUES (?, 'open', ?, 'marketing', ?, 'create', ?)`)
-      .bind(id, mine, t, me.id),
-    log(db, me.id, 'product_add', id, name),
-  ]);
-  return json({ id });
-});
 
 route('GET', '/api/products/:id', async ({ db, me, params, settings }) => {
   requireMe(me);
@@ -520,21 +501,25 @@ route('GET', '/api/products/:id', async ({ db, me, params, settings }) => {
   const hours = stintHours(stints.results, t, cfg);
   const avgs = teamAverages(allProducts.results, stepTimes(allStints.results, stintHours(allStints.results, t, cfg)));
   const mine = stepTimes(stints.results, hours).get(id) || {};
-  const open = stints.results.find((s) => s.ended_at == null) || null;
-  const ret = currentReturn(stints.results, open);
+  // 可能同時有兩段在進行（做圖、文案）
+  const retOf = (s) => { const r = currentReturn(stints.results, s); return r ? { note: r.note, by_id: r.by_id, at: r.started_at } : null; };
+  const opens = stints.results.filter((s) => s.ended_at == null).map((s) => ({ ...s, returned: retOf(s) }));
+  const open = opens.find((s) => s.step === p.step) || opens[0] || null;
   const steps = Object.fromEntries(FLOW.map((s) => {
-    const held = Math.round((mine[s]?.held || 0) * 10) / 10;
-    return [s, { held, pool: Math.round((mine[s]?.pool || 0) * 10) / 10, rounds: mine[s]?.rounds || 0, avg: avgs[s].avg, ...compare(held, avgs[s].avg) }];
+    const r1 = (x) => Math.round((x || 0) * 10) / 10;
+    const work = r1(mine[s]?.work);
+    const c = mine[s]?.imported ? { diff: null, level: 'ok' } : compare(work, avgs[s].avg);
+    return [s, { held: r1(mine[s]?.held), work, pool: r1(mine[s]?.pool), rounds: mine[s]?.rounds || 0, avg: avgs[s].avg, total_avg: avgs[s].total_avg, imported: !!mine[s]?.imported, ...c }];
   }));
   return json({
     ...p,
     photos: photos.results,
     comments: comments.results,
     my_mentions: mentions.results.filter((m) => m.member_id === me.id),
-    stints: stints.results.map((s) => ({ ...s, held: Math.round((hours.get(s.id) || 0) * 10) / 10 })),
-    open, returned: ret ? { note: ret.note, by_id: ret.by_id, at: ret.started_at, from: ret.end_reason } : null,
-    steps, rush: rushInfo(p, t, cfg, settings),
-    attribution: attributionFor(id, stints.results, hours),
+    stints: stints.results.map((s) => ({ ...s, held: me.is_admin ? Math.round((hours.get(s.id) || 0) * 10) / 10 : null })),
+    open, opens, returned: open?.returned ?? null,
+    steps: me.is_admin ? steps : null, rush: rushInfo(p, t, cfg, settings),
+    attribution: me.is_admin ? attributionFor(id, stints.results, hours) : [],
     now: t,
   });
 });
@@ -548,9 +533,15 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params }) =>
   const b = await body(request);
   await checkVersion(db, p, b.version);
   if (p.delisted_at) throw new HttpError(400, '這件已下架，試算表加回來才會恢復');
-  const open = await openStint(db, id);
+  const open = await openStint(db, id, b.step || p.step);
   const need = () => {
-    if (!open || open.step !== p.step || (b.step && b.step !== p.step)) throw new HttpError(409, '這件商品已不在這一步，畫面已更新');
+    if (!open) throw new HttpError(409, '這件商品已不在這一步，畫面已更新');
+  };
+  // 完成、退回只能對商品目前所在的那一步（文案可以先寫，但要等圖做好才能上架）
+  const mustBeCurrent = () => {
+    if (open.step !== p.step) {
+      throw new HttpError(400, open.step === 'listing' && p.step === 'cutout' ? '美編的圖還沒做好，做好才能按「已上架」' : '這件商品已不在這一步，畫面已更新');
+    }
   };
   const mustHold = () => {
     need();
@@ -560,9 +551,11 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params }) =>
   const forward = async (endReason, extra = {}) => {
     // 被後面的人退回、改好了：直接交回退回的那一步
     const to = p.return_to && p.return_to !== p.step ? p.return_to : NEXT[p.step];
-    const member = to === 'done' ? null : await holderFor(db, p, to);
+    // 文案那一段已經在進行（同時開始的），不用再開一段
+    const running = to !== 'done' && await openStint(db, id, to);
+    const member = to === 'done' || running ? null : await holderFor(db, p, to);
     return transition(db, p, open, me, {
-      endReason, to, member, updates: { return_to: null, ...(extra.updates || {}) }, endNote: extra.endNote,
+      endReason, to, member, skipStint: !!running, updates: { return_to: null, ...(extra.updates || {}) }, endNote: extra.endNote,
       action: extra.action || 'complete', detail: `${STEP_LABEL[p.step]} → ${STEP_LABEL[to]}${extra.detail ? `：${extra.detail}` : ''}`,
     });
   };
@@ -587,6 +580,7 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params }) =>
     }
     case 'complete': {
       mustHold();
+      mustBeCurrent();
       if (p.step === 'open' && !(await photoCount('pick'))) throw new HttpError(400, '請至少上傳 1 張選品照片');
       if (p.step === 'cutout' && !(await photoCount('cutout'))) throw new HttpError(400, '請上傳去背圖');
       if (p.step === 'listing') {
@@ -624,13 +618,21 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params }) =>
       break;
     }
     case 'return': {
-      mustHold();
+      // 管理員可以直接退回任何一件；其他人要是認領這一步的人
+      const byAdmin = me.is_admin && (!open || open.member_id !== me.id);
+      if (byAdmin) need(); else mustHold();
+      mustBeCurrent();
       const note = String(b.note ?? '').trim().slice(0, 2000);
       if (!note) throw new HttpError(400, '請寫出哪裡有問題');
       let to;
       let label = '';
       const updates = {};
-      if (p.step === 'mkt_check') {
+      if (byAdmin) {
+        const before = FLOW.slice(0, Math.max(0, FLOW.indexOf(p.step)));
+        to = before.includes(b.target) ? b.target : null;
+        if (!to) throw new HttpError(400, '請選要退回哪一步');
+        label = '管理員退回';
+      } else if (p.step === 'mkt_check') {
         to = ['open', 'cutout', 'listing', 'optimizing'].includes(b.target) ? b.target : null;
         if (!to || to === 'open') throw new HttpError(400, '請選要退回哪一步');
       } else if (p.step === 'optimizing') {
@@ -647,7 +649,7 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params }) =>
       stmts = transition(db, p, open, me, {
         endReason: 'return', to, member, startReason: 'return', note: label ? `【${label}】${note}` : note,
         // 行銷檢查、設計師退回：改好直接交回；中間關卡退回：照正常流程往下走
-        updates: { ...updates, return_to: ['mkt_check', 'optimizing'].includes(p.step) ? p.step : null },
+        updates: { ...updates, return_to: ['mkt_check', 'optimizing'].includes(p.step) || byAdmin ? p.step : null },
         action: 'return', detail: `${STEP_LABEL[p.step]} → ${STEP_LABEL[to]}：${label ? `【${label}】` : ''}${note.slice(0, 60)}`,
       });
       break;
@@ -721,10 +723,13 @@ route('POST', '/api/sync/sheet', async ({ db, request, me, settings }) => {
   const t = now();
   const stmts = [];
   for (const r of plan.inserts) {
+    // 行銷寫上名稱就算開單完成：美編做圖、上架人員寫文案同時開始
     stmts.push(db.prepare(`INSERT INTO products (name, link, sheet_key, source, sheet_status, status_code, sheet_row, step, created_at, updated_at)
-      VALUES (?, ?, ?, 'sheet', ?, ?, ?, 'open', ?, ?)`).bind(r.name, r.link, r.key, r.status, r.code, r.row, t, t));
-    stmts.push(db.prepare(`INSERT INTO stints (product_id, step, member_id, role, started_at, start_reason, by_id)
-      SELECT id, 'open', NULL, 'marketing', ?, 'create', ? FROM products WHERE sheet_key = ?`).bind(t, me.id, r.key));
+      VALUES (?, ?, ?, 'sheet', ?, ?, ?, 'cutout', ?, ?)`).bind(r.name, r.link, r.key, r.status, r.code, r.row, t, t));
+    for (const [step, role] of [['cutout', 'editor'], ['listing', 'lister']]) {
+      stmts.push(db.prepare(`INSERT INTO stints (product_id, step, member_id, role, started_at, start_reason, by_id)
+        SELECT id, ?, NULL, ?, ?, 'create', ? FROM products WHERE sheet_key = ?`).bind(step, role, t, me.id, r.key));
+    }
   }
   for (const u of plan.updates) {
     stmts.push(db.prepare('UPDATE products SET name = ?, link = ?, sheet_status = ?, status_code = ?, sheet_row = ?, updated_at = ?, version = version + 1 WHERE id = ?')
@@ -738,10 +743,19 @@ route('POST', '/api/sync/sheet', async ({ db, request, me, settings }) => {
   for (const r of plan.restore) {
     const step = stepOf.get(r.id);
     stmts.push(db.prepare('UPDATE products SET delisted_at = NULL, updated_at = ?, version = version + 1 WHERE id = ?').bind(t, r.id));
-    if (step !== 'done') {
+    if (step === 'open') {
+      // 舊資料還在開單：照新流程從做圖、文案開始
+      stmts.push(db.prepare("UPDATE products SET step = 'cutout' WHERE id = ?").bind(r.id));
+      for (const [st, role] of [['cutout', 'editor'], ['listing', 'lister']]) {
+        stmts.push(db.prepare(`INSERT INTO stints (product_id, step, member_id, role, started_at, start_reason, by_id) VALUES (?, ?, NULL, ?, ?, 'create', ?)`)
+          .bind(r.id, st, role, t, me.id));
+      }
+    } else if (step !== 'done') {
+      // 下架時進行中的每一段都接回去（做圖、文案可能同時在做）
       stmts.push(db.prepare(`INSERT INTO stints (product_id, step, member_id, role, started_at, start_reason, by_id)
-        VALUES (?, ?, (SELECT member_id FROM stints WHERE product_id = ? AND end_reason = 'delisted' ORDER BY id DESC LIMIT 1), ?, ?, 'restore', ?)`)
-        .bind(r.id, step, r.id, STEP_ROLE[step], t, me.id));
+        SELECT product_id, step, member_id, role, ?, 'restore', ? FROM stints WHERE product_id = ? AND end_reason = 'delisted'
+          AND ended_at = (SELECT MAX(ended_at) FROM stints WHERE product_id = ? AND end_reason = 'delisted')`)
+        .bind(t, me.id, r.id, r.id));
     }
   }
   const summary = { at: t, by: me.id, total: rows.length, added: plan.inserts.length, updated: plan.updates.length, delisted: plan.delist.length, restored: plan.restore.length };
@@ -811,8 +825,8 @@ route('POST', '/api/products/:id/photos', async ({ db, env, request, me, params 
   const form = await request.formData();
   const kind = String(form.get('kind'));
   if (!PHOTO_STEP[kind]) throw new HttpError(400, '照片類型錯誤');
-  const open = await openStint(db, id);
-  if (!open || open.step !== PHOTO_STEP[kind] || open.member_id !== me.id) throw new HttpError(403, '只有認領這一步的人可以上傳');
+  const open = await openStint(db, id, PHOTO_STEP[kind]);
+  if (!open || open.member_id !== me.id) throw new HttpError(403, '只有認領這一步的人可以上傳');
   const files = form.getAll('file').filter((f) => typeof f === 'object' && f.size > 0);
   if (!files.length) throw new HttpError(400, '沒有收到照片');
   const t = now();
@@ -848,8 +862,8 @@ route('DELETE', '/api/photos/:id', async ({ db, me, params }) => {
   const id = intId(params.id);
   const ph = await db.prepare('SELECT product_id, kind FROM photos WHERE id = ? AND deleted_at IS NULL').bind(id).first();
   if (!ph) throw new HttpError(404, '找不到照片');
-  const open = await openStint(db, ph.product_id);
-  const ownStep = open && open.step === PHOTO_STEP[ph.kind] && open.member_id === me.id;
+  const open = await openStint(db, ph.product_id, PHOTO_STEP[ph.kind]);
+  const ownStep = open && open.member_id === me.id;
   if (!ownStep && !me.is_admin) throw new HttpError(403, '只有認領這一步的人或管理員可以刪除');
   await db.batch([
     db.prepare('UPDATE photos SET deleted_at = ? WHERE id = ?').bind(now(), id),
@@ -907,7 +921,7 @@ route('POST', '/api/mentions/:id/ack', async ({ db, me, params }) => {
 // ---------- 成效分析 ----------
 
 route('GET', '/api/analysis', async ({ db, me, url, settings }) => {
-  requireMe(me);
+  requireAdmin(me); // 成效分析先只給管理員看
   const days = Number(url.searchParams.get('days')) || 0;
   const d = await loadAll(db);
   const t = now();

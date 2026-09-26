@@ -4,12 +4,12 @@
 
 const POLL_MS = 10000;
 const MAX_EDGE = 1920;
-const STEP_ORDER = ['open', 'cutout', 'listing', 'optimizing', 'mkt_check', 'done'];
-const FLOW = ['open', 'cutout', 'listing', 'optimizing', 'mkt_check'];
+const STEP_ORDER = ['cutout', 'listing', 'optimizing', 'mkt_check', 'done'];
+const FLOW = ['cutout', 'listing', 'optimizing', 'mkt_check'];
 const STEP_COLOR = {
   open: '#9B8AE0', cutout: '#4FBFA8', listing: '#6AA3EE', optimizing: '#E27BB4', mkt_check: '#F2A65A', done: '#45B98A',
 };
-const KIND = { pick: '選品照片', cutout: '去背圖', opt: '優化截圖' };
+const KIND = { pick: '選品照片', cutout: '商品圖', opt: '優化截圖' };
 const STATUS = { A: '投放中', B: '優先製作', C: '可投放', D: '待製作' };
 const GROUPS = [
   ['rush', '插隊急件', 'var(--ruby)'],
@@ -192,12 +192,12 @@ async function boot() {
   renderNav();
   document.getElementById('me').innerHTML = `${avatar(S.me)}<span>${esc(S.me.name)}</span><span class="roles">${esc(rolesText(S.me) || (S.me.is_admin ? '管理員' : ''))}</span>`;
   S.version = (await api('GET', '/api/version')).v;
-  if (!location.hash) location.hash = '#/overview';
+  if (!location.hash) location.hash = S.me.is_admin ? '#/overview' : '#/radar';
   await render();
 }
 
 function renderNav() {
-  const items = [['overview', '全覽'], ['radar', '我的待辦'], ['analysis', '成效分析'], ['log', '紀錄'], ...(S.me.is_admin ? [['settings', '設定']] : [])];
+  const items = [['radar', '今天要做'], ['overview', '全覽'], ...(S.me.is_admin ? [['analysis', '成效分析']] : []), ['log', '紀錄'], ...(S.me.is_admin ? [['settings', '設定']] : [])];
   document.getElementById('nav').innerHTML = items.map(([r, l]) => `<a href="#/${r}" data-route="${r}">${l}</a>`).join('');
 }
 
@@ -254,16 +254,16 @@ function renderLogin() {
 
 // ---------- router ----------
 
-const currentRoute = () => (location.hash.replace(/^#\/?/, '') || 'overview').split('/');
+const currentRoute = () => (location.hash.replace(/^#\/?/, '') || (S.me?.is_admin ? 'overview' : 'radar')).split('/');
 window.addEventListener('hashchange', () => { if (S.me) render(); });
 
 async function render() {
   const [route, arg] = currentRoute();
   if (route !== 'radar' && document.querySelector('[data-view=radar]')) S.radarScroll = window.scrollY;
   document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.route === route || (['p', 'new'].includes(route) && a.dataset.route === 'overview')));
-  const views = { overview: viewOverview, radar: viewRadar, analysis: viewAnalysis, log: viewLog, settings: viewSettings, p: viewProduct, new: viewNew };
+  const views = { overview: viewOverview, radar: viewRadar, analysis: viewAnalysis, log: viewLog, settings: viewSettings, p: viewProduct };
   try {
-    await (views[route] || viewOverview)(arg);
+    await (views[route] || (S.me.is_admin ? viewOverview : viewRadar))(arg);
   } catch (e) {
     if (!e.network) $app.innerHTML = `<p class="empty">${esc(e.message)}</p>`;
   }
@@ -278,7 +278,7 @@ function claim(productId, version, step) {
 
 function radarCard(it, hero = false) {
   const tags = it.tags.filter((t) => t.t).map((t) => `<span class="tag ${t.k}">${esc(t.t)}</span>`).join('');
-  const time = it.held_h != null ? `<span>這一步 <span class="mono">${esc(fmtWork(it.held_h))}</span>${it.avg_h != null ? `／平均 <span class="mono">${esc(fmtWork(it.avg_h))}</span>` : ''}</span>` : '';
+  const time = it.held_h != null ? `<span>${it.holder_id ? `工作 <span class="mono">${esc(fmtWork(it.held_h))}</span>${it.avg_h != null ? `／平均 <span class="mono">${esc(fmtWork(it.avg_h))}</span>` : ''}` : ''}${it.wait_h ? `${it.holder_id ? '・' : ''}沒人接 <span class="mono">${esc(fmtWork(it.wait_h))}</span>` : ''}</span>` : '';
   return `
     <div class="card rcard g-${it.group} ${hero ? 'hero' : ''}" data-href="#/p/${it.product_id}" data-key="${esc(it.key)}">
       ${hero ? `<div class="hero-t">建議你現在先做這件<span class="muted">${esc(suggestWhy(it))}</span></div>` : ''}
@@ -319,10 +319,9 @@ async function viewRadar() {
   $app.innerHTML = `
     <div data-view="radar">
     <div class="page-head">
-      <h1>我的待辦</h1>
-      <div class="seg"><button data-scope="me" class="${scope === 'me' ? 'on' : ''}">我的</button><button data-scope="all" class="${scope === 'all' ? 'on' : ''}">全部卡關</button></div>
+      <h1>今天要做</h1>
+      ${S.me.is_admin ? `<div class="seg"><button data-scope="me" class="${scope === 'me' ? 'on' : ''}">我的</button><button data-scope="all" class="${scope === 'all' ? 'on' : ''}">全部卡關</button></div>` : ''}
       <span class="spacer"></span>
-      ${isMkt() ? '<a class="btn" href="#/new">＋ 手動開單</a>' : ''}
     </div>
     ${handled ? `<div class="card rcard ghost" style="margin-bottom:12px"><div><span class="t">${esc(handled.name)}</span><div class="muted">${esc(handled.to)}</div></div></div>` : ''}
     ${hero ? `<div class="hero-wrap">${radarCard(hero, true)}</div>` : ''}
@@ -342,33 +341,8 @@ async function viewRadar() {
   $app.querySelectorAll('[data-claim]').forEach((b) => { b.onclick = () => claim(Number(b.dataset.claim), Number(b.dataset.v), b.dataset.step); });
   const nav = document.querySelector('#nav a[data-route=radar]');
   const mineN = r.items.filter((i) => i.group !== 'pool').length;
-  if (nav && scope === 'me') nav.innerHTML = `我的待辦${mineN ? `<span class="badge">${mineN}</span>` : ''}`;
+  if (nav && scope === 'me') nav.innerHTML = `今天要做${mineN ? `<span class="badge">${mineN}</span>` : ''}`;
   if (S.radarScroll) { window.scrollTo(0, S.radarScroll); S.radarScroll = 0; }
-}
-
-// ---------- 手動開單 ----------
-
-async function viewNew() {
-  if (!isMkt()) { $app.innerHTML = '<p class="empty">只有行銷或管理員可以開單</p>'; return; }
-  $app.innerHTML = `
-    <div class="page-head"><a class="btn small" href="#/overview">← 全覽</a><h1>手動開單</h1></div>
-    <form class="card section" id="new-form" style="max-width:640px">
-      <p class="muted" style="margin-top:0">試算表裡的商品按「同步試算表」就會進來，不用手動開。這裡是給試算表以外的商品。</p>
-      <label class="field"><span>商品名稱</span><input type="text" name="name" required maxlength="200" placeholder="例：14K 金鋯石耳環"></label>
-      <label class="field"><span>商品連結（Shopline 商品頁，選填）</span><input type="url" name="link" placeholder="https://"></label>
-      <label class="field"><span>狀態</span><select name="status_code"><option value="">未分類</option>${Object.entries(STATUS).map(([k, l]) => `<option value="${k}">${k} ${l}</option>`).join('')}</select></label>
-      <p class="muted">${hasRole('marketing') ? '建立後由你負責開單（上傳選品照片），最後也由你做行銷檢查。' : '建立後放在「待開單」，由行銷認領。'}</p>
-      <div class="row"><span class="spacer"></span><button class="btn primary act">建立</button></div>
-    </form>`;
-  const f = document.getElementById('new-form');
-  f.onsubmit = (e) => {
-    e.preventDefault();
-    act(async () => {
-      const { id } = await api('POST', '/api/products', { name: f.name.value, link: f.link.value.trim(), status_code: f.status_code.value });
-      f.querySelectorAll('[data-dirty]').forEach((el) => delete el.dataset.dirty);
-      location.hash = `#/p/${id}`;
-    }, '已建立', 'none');
-  };
 }
 
 // ---------- 全覽（首頁） ----------
@@ -378,10 +352,14 @@ function isMineCell(c) {
 }
 
 function cellTip(c) {
+  if (c.held == null) {
+    const who2 = c.state === 'current' ? (c.waiting ? '等人認領' : member(c.holder_id)?.name) : member(c.holders[c.holders.length - 1] ?? c.owner)?.name;
+    return `${stepLabel(c.step)}・${who2 ?? (c.state === 'future' ? '還沒輪到' : '—')}${c.rounds > 1 ? `\n退回重做，第 ${c.rounds} 輪` : ''}`;
+  }
   const person = c.state === 'current' ? (c.waiting ? '等人認領' : member(c.holder_id)?.name) : member(c.holders[c.holders.length - 1] ?? c.owner)?.name;
   const lines = [`${stepLabel(c.step)}・${person ?? '還沒輪到'}`];
-  if (c.held) lines.push(`花了 ${fmtWork(c.held)}${c.pool ? `（其中等認領 ${fmtWork(c.pool)}）` : ''}`);
-  lines.push(c.avg != null ? `團隊平均 ${fmtWork(c.avg)}` : '團隊平均：資料還不夠（至少 3 件）');
+  if (c.held) lines.push(`工作 ${fmtWork(c.work)}（認領後）・總共 ${fmtWork(c.held)}${c.pool ? `，沒人接 ${fmtWork(c.pool)}` : ''}`);
+  lines.push(c.avg != null ? `團隊平均工作 ${fmtWork(c.avg)}` : '團隊平均：資料還不夠（至少 3 件）');
   if (c.diff != null) lines.push(c.diff > 0 ? `比平均慢 ${fmtWork(c.diff)}` : c.diff < 0 ? `比平均快 ${fmtWork(-c.diff)}` : '跟平均差不多');
   if (c.rounds > 1) lines.push(`退回重做，第 ${c.rounds} 輪`);
   if (c.state === 'future' && !c.held) lines.push('尚未開始');
@@ -390,23 +368,24 @@ function cellTip(c) {
 
 function laneRow(r) {
   const n = FLOW.length;
-  const cur = r.done ? n - 1 : FLOW.indexOf(r.step);
+  const cur = r.done ? n - 1 : Math.max(0, FLOW.indexOf(r.step));
   const at = (i) => ((i + 0.5) / n) * 100;
   const fillW = at(cur) - at(0);
   const nodes = r.cells.map((c, i) => {
     const mine = isMineCell(c);
     const tip = esc(cellTip(c));
-    if (i === cur && !r.done) {
+    if (c.state === 'current' && !r.done) {
       const person = c.waiting ? '等人認領' : (member(c.holder_id)?.name ?? '—');
-      const time = `${fmtWork(c.held)}${c.avg != null ? ` / 均 ${fmtWork(c.avg)}` : ''}`;
+      const time = !S.showTime || c.held == null ? '' : c.waiting ? `沒人接 ${fmtWork(c.pool)}` : `${fmtWork(c.work)}${c.avg != null ? ` / 均 ${fmtWork(c.avg)}` : ''}`;
       const rushHot = r.rush && (r.rush.urgent || r.rush.overdue);
-      const flag = r.rush?.overdue ? '逾期' : rushHot ? '插隊' : c.level === 'very' ? '很慢' : c.level === 'slow' ? '偏慢' : c.rounds > 1 ? `第 ${c.rounds} 輪` : '';
-      const st = rushHot || c.level === 'very' ? 'st-red' : c.level === 'slow' ? 'st-yellow' : c.waiting ? 'st-wait' : '';
-      return `<div class="pin ${mine ? 'mine' : 'other'} ${st}" style="left:${at(i)}%" data-tip="${tip}" tabindex="0">
-        <b>${esc(person)}</b><span class="mono">${esc(time)}</span>${flag ? `<em>${esc(flag)}</em>` : ''}</div>`;
+      const lv = S.showTime ? c.level : 'ok';
+      const flag = r.rush?.overdue ? '逾期' : rushHot ? '插隊' : lv === 'very' ? '很慢' : lv === 'slow' ? '偏慢' : c.rounds > 1 ? `第 ${c.rounds} 輪` : '';
+      const st = rushHot || lv === 'very' ? 'st-red' : lv === 'slow' ? 'st-yellow' : c.waiting ? 'st-wait' : '';
+      return `<div class="pin ${mine ? 'mine' : 'other'} ${st} ${c.parallel ? 'parallel' : ''}" style="left:${at(i)}%" data-tip="${tip}" tabindex="0">
+        <b>${esc(person)}</b>${time ? `<span class="mono">${esc(time)}</span>` : ''}${flag ? `<em>${esc(flag)}</em>` : ''}</div>`;
     }
     const state = i < cur || r.done ? 'done' : 'future';
-    const late = state === 'done' && c.level !== 'ok';
+    const late = S.showTime && state === 'done' && c.level !== 'ok';
     return `<span class="node ${state} ${mine ? 'mine' : 'other'} ${late ? 'late' : ''} ${state === 'future' && c.held ? 'visited' : ''}" style="left:${at(i)}%" data-tip="${tip}" tabindex="0"></span>`;
   }).join('');
   return `<div class="lane-row ${r.cells.some(isMineCell) ? 'row-mine' : ''}" data-href="#/p/${r.id}">
@@ -416,7 +395,7 @@ function laneRow(r) {
       <div class="rail-fill" style="left:${at(0)}%;width:${fillW}%"></div>
       ${nodes}
     </div>
-    <div class="lane-var"><span class="var big ${diffCls(r.diff)}" title="每一步跟團隊平均比，加總">${esc(diffTxt(r.cells.some((c) => c.diff != null) ? r.diff : null))}</span></div>
+    ${S.showTime ? `<div class="lane-var"><span class="var big ${diffCls(r.diff)}" title="每一步跟團隊平均比，加總">${esc(diffTxt(r.cells.some((c) => c.diff != null) ? r.diff : null))}</span></div>` : '<div class="lane-var"></div>'}
     <div class="lane-ret mono ${r.returns ? 'over' : 'faint'}">${r.returns ? `退 ${r.returns}` : '—'}</div>
   </div>`;
 }
@@ -457,15 +436,11 @@ function syncBar() {
 
 async function viewOverview() {
   const d = await api('GET', `/api/overview?filter=${S.ovFilter}`);
+  S.showTime = false; // 全覽只看進度，時間與比較都在成效分析
   const active = d.rows.filter((r) => !r.done);
   const done = d.rows.filter((r) => r.done).sort((a, b) => b.done_at - a.done_at);
   const idx = (r) => STEP_ORDER.indexOf(r.step);
   if (S.ovSort === 'progress') active.sort((a, b) => idx(b) - idx(a) || b.diff - a.diff);
-  if (S.ovSort === 'slow') active.sort((a, b) => b.diff - a.diff || idx(b) - idx(a));
-  const slow = active.filter((r) => r.level !== 'ok').length;
-  const waiting = active.filter((r) => r.cells.some((c) => c.state === 'current' && c.waiting)).length;
-  const returns = d.rows.reduce((s, r) => s + r.returns, 0);
-  const overdue = active.filter((r) => r.rush?.overdue).length;
   S.radarKeys = active.map((r) => r.id);
   const c = d.counts;
   const filters = [['all', '全部', c.all], ['rush', '插隊', c.rush], ...['A', 'B', 'C', 'D'].map((k) => [k, `${k} ${STATUS[k]}`, c[k]]),
@@ -475,26 +450,13 @@ async function viewOverview() {
     <div class="page-head">
       <h1>全覽</h1>
       <div class="seg batch-seg">${filters.map(([k, l, n]) => `<button data-filter="${k}" class="${S.ovFilter === k ? 'on' : ''}">${esc(l)} <span class="mono">${n}</span></button>`).join('')}</div>
-      <span class="spacer"></span>
-      ${isMkt() ? '<a class="btn" href="#/new">＋ 手動開單</a>' : ''}
     </div>
     ${syncBar()}
-    <div class="ov-kpis">
-      <div class="kpi-chip"><span>進行中</span><b class="mono">${active.length}</b></div>
-      <div class="kpi-chip"><span>等人認領</span><b class="mono">${waiting}</b></div>
-      <div class="kpi-chip k-ruby"><span>比平均慢</span><b class="mono">${slow}</b></div>
-      <div class="kpi-chip k-topaz"><span>退件</span><b class="mono">${returns}</b></div>
-      ${overdue ? `<div class="kpi-chip k-ruby"><span>插隊逾期</span><b class="mono">${overdue}</b></div>` : ''}
-      <div class="kpi-chip k-emerald"><span>已完成</span><b class="mono">${done.length}</b></div>
-      <span class="spacer"></span>
-      <div class="seg"><button data-sort="priority" class="${S.ovSort === 'priority' ? 'on' : ''}">依優先</button><button data-sort="progress" class="${S.ovSort === 'progress' ? 'on' : ''}">依進度</button><button data-sort="slow" class="${S.ovSort === 'slow' ? 'on' : ''}">慢的優先</button></div>
-    </div>
-    <div class="legend" style="margin:0 0 10px 4px"><span class="lg-node done"></span>已走過<span class="lg-node late"></span>這一步比平均慢<span class="lg-pin"></span>目前位置<span class="lg-pin wait"></span>等人認領<span class="lg-node mine"></span>我負責的</div>
     <div class="card lanes">
       <div class="lane-row lane-head">
-        <div class="lane-name">商品<span class="muted">（名稱連到商品頁，點這列看詳情）</span></div>
+        <div class="lane-name">商品<span class="muted">（名稱連到 Shopline，點這列看詳情）</span></div>
         <div class="lane">${FLOW.map((s, i) => `<span class="lane-step" style="left:${((i + 0.5) / FLOW.length) * 100}%;--sc:${STEP_COLOR[s]}">${esc(stepLabel(s))}</span>`).join('')}</div>
-        <div class="lane-var">跟團隊平均比</div>
+        <div class="lane-var">${S.showTime ? '跟團隊平均比' : ''}</div>
         <div class="lane-ret">退件</div>
       </div>
       ${active.map(laneRow).join('') || `<p class="empty">${S.ovFilter === 'delisted' ? '沒有已下架的商品' : S.me.can_sync && !S.settings.last_sheet_sync ? '還沒有商品：先按上面的「連線設定」接上試算表，再按「同步試算表」' : '這裡沒有進行中的商品'}</p>`}
@@ -502,17 +464,17 @@ async function viewOverview() {
     <h2 class="done-h">已完成 <span class="muted mono">${done.length}</span></h2>
     <div class="card ov-wrap">
       <table class="ov done-table">
-        <thead><tr><th class="ov-name">商品</th><th>完成時間</th><th class="num">跟團隊平均比</th><th class="num">退件</th></tr></thead>
+        <thead><tr><th class="ov-name">商品</th><th>完成時間</th><th class="num">${S.showTime ? '跟團隊平均比' : ''}</th><th class="num">退件</th></tr></thead>
         <tbody>${doneShown.map((r) => `<tr data-href="#/p/${r.id}">
           <td class="ov-name"><div class="row" style="gap:8px;flex-wrap:nowrap">${thumb(r.id, r.thumb, 'sm')}${statusBadge(r)}${shopName(r.name, r.link)}</div></td>
           <td class="mono">${r.done_at ? fmtTime(r.done_at) : ''}${r.rush ? (r.rush.missed ? ' <span class="tag red">錯過插隊日</span>' : ' <span class="tag green">插隊準時</span>') : ''}</td>
-          <td class="num"><span class="var ${diffCls(r.diff)}">${esc(diffTxt(r.cells.some((x) => x.diff != null) ? r.diff : null))}</span></td>
+          <td class="num">${S.showTime ? `<span class="var ${diffCls(r.diff)}">${esc(diffTxt(r.cells.some((x) => x.diff != null) ? r.diff : null))}</span>` : ''}</td>
           <td class="num mono ${r.returns ? 'over' : 'faint'}">${r.returns}</td>
         </tr>`).join('') || '<tr><td colspan="4" class="empty">還沒有完成的商品</td></tr>'}</tbody>
       </table>
       ${done.length > doneShown.length ? `<div class="row" style="padding:10px"><span class="spacer"></span><button class="btn small" id="done-all">顯示全部 ${done.length} 件</button></div>` : ''}
     </div>
-    <p class="muted" style="margin-top:12px">滑鼠移到圓點看每一步花了多久、團隊平均多久。平均只拿走完這一步的商品來算，至少 3 件才比；沒人認領的等待時間也算在那一步。只算上班時間。</p>`;
+    ${S.showTime ? '' : '<!--'}<p class="muted" style="margin-top:12px">做圖和文案同時開始。跟團隊平均比的是「認領後到完成」的工作時間；沒人接的時間另外記，滑鼠移到圓點可以看。平均只拿走完這一步的商品來算，至少 3 件才比。只算上班時間。</p>${S.showTime ? '' : '-->'}`;
   $app.querySelectorAll('[data-filter]').forEach((b) => { b.onclick = () => { S.ovFilter = b.dataset.filter; viewOverview(); }; });
   $app.querySelectorAll('[data-sort]').forEach((b) => { b.onclick = () => { S.ovSort = b.dataset.sort; viewOverview(); }; });
   $app.querySelectorAll('[data-href]').forEach((row) => {
@@ -660,9 +622,9 @@ function photoGrid(p, kind, { upload = false, del = false, download = false } = 
 }
 
 // 完成後交給誰（顯示用；實際由後端決定）
-function nextHint(p) {
-  if (p.return_to === 'mkt_check' && p.step !== 'mkt_check') return `行銷檢查（${member(p.marketer_id)?.name ?? '行銷'}）`;
-  const next = STEP_ORDER[STEP_ORDER.indexOf(p.step) + 1];
+function nextHint(p, step = p.step) {
+  if (p.return_to && p.return_to !== step) return p.return_to === 'mkt_check' ? `行銷檢查（${member(p.marketer_id)?.name ?? '行銷'}）` : stepLabel(p.return_to);
+  const next = STEP_ORDER[STEP_ORDER.indexOf(step) + 1];
   if (next === 'done') return '已完成';
   if (next === 'mkt_check') return `行銷檢查（${member(p.marketer_id)?.name ?? '行銷'}）`;
   return `${stepLabel(next)}`;
@@ -672,7 +634,7 @@ function returnForm(p) {
   const isCheck = p.step === 'mkt_check';
   const isOpt = p.step === 'optimizing';
   const targets = ['cutout', 'listing', 'optimizing'];
-  const prev = { cutout: 'open', listing: 'cutout' }[p.step];
+  const prev = { listing: 'cutout' }[p.step];
   return `<div class="return-box" data-return-form hidden>
     ${isCheck ? `<div class="field"><span>退回哪一步（改好後直接交回你）</span>
       <div class="hour-pick" id="ret-target">${targets.map((t) => `<label><input type="radio" name="target" value="${t}">${esc(stepLabel(t))}</label>`).join('')}</div></div>`
@@ -685,8 +647,16 @@ function returnForm(p) {
   </div>`;
 }
 
+// 這件商品我要操作的是哪一段：我手上的 > 我能認領的 > 商品目前所在的那一段（做圖、文案可能同時進行）
+function chosenStint(p) {
+  const opens = p.opens || [];
+  return opens.find((s) => s.member_id === S.me.id)
+    || opens.find((s) => !s.member_id && hasRole(s.role))
+    || p.open || null;
+}
+
 function actionPanel(p) {
-  const open = p.open;
+  const open = chosenStint(p);
   const shop = (p.sl_url || p.link) ? `<a class="btn" href="${esc(p.sl_url || p.link)}" target="_blank" rel="noopener">開啟 Shopline 商品頁 ↗</a>` : '';
   if (p.delisted_at) {
     return `<div class="card action locked"><h2>已下架</h2><div class="sub">試算表裡已經沒有這件，${fmtTime(p.delisted_at)} 標成已下架。試算表加回來後，下次同步會自動恢復。</div></div>`;
@@ -695,49 +665,47 @@ function actionPanel(p) {
     return `<div class="card action locked"><h2>已完成</h2><div class="sub">${p.done_at ? `${fmtTime(p.done_at)} 由行銷檢查通過` : ''}</div><div class="row">${shop}</div></div>`;
   }
   if (!open) return '';
-  const returned = p.returned ? `
-    <div class="returned"><b>被 ${esc(member(p.returned.by_id)?.name ?? '')} 退回</b>（${fmtTime(p.returned.at)}）
-      <div class="note">${esc(p.returned.note)}</div></div>` : '';
-  const st = p.steps[p.step];
-  const timeLine = `這一步已花 <span class="mono">${esc(fmtWork(st.held))}</span>${st.pool ? `（其中等認領 ${esc(fmtWork(st.pool))}）` : ''}・團隊平均 <span class="mono">${st.avg != null ? esc(fmtWork(st.avg)) : '資料不足'}</span>`;
+  const step = open.step;
+  const others = (p.opens || []).filter((s) => s.id !== open.id)
+    .map((s) => `<div class="muted parallel-line">同時進行：${esc(stepLabel(s.step))}・${s.member_id ? esc(member(s.member_id)?.name ?? '') : '等人認領'}</div>`).join('');
+  const returned = open.returned ? `
+    <div class="returned"><b>被 ${esc(member(open.returned.by_id)?.name ?? '')} 退回</b>（${fmtTime(open.returned.at)}）
+      <div class="note">${esc(open.returned.note)}</div></div>` : '';
   const role = open.role;
   if (!open.member_id) {
     const can = hasRole(role);
     return `<div class="card action ${can ? 'mine' : 'locked'}">${returned}
-      <h2>「${esc(stepLabel(p.step))}」等人認領</h2>
-      <div class="sub">${timeLine}</div>
+      <h2>「${esc(stepLabel(step))}」等人認領</h2>
+      <div class="sub">還沒有人接，按「我來做」就由你負責</div>
       ${can ? `<button class="btn primary act" id="claim-btn">我來做</button> <span class="muted">認領後只會出現在你的待辦</span>`
         : `<span class="muted">等${esc(roleName(role))}認領</span>`}
+      ${others}
     </div>`;
   }
   if (open.member_id !== S.me.id) {
     const holder = member(open.member_id);
     return `<div class="card action locked">${returned}
-      <h2>目前在「${esc(stepLabel(p.step))}」</h2>
-      <div class="sub">負責人：${who(open.member_id)}・${timeLine}</div>
+      <h2>目前在「${esc(stepLabel(step))}」</h2>
+      <div class="sub">負責人：${who(open.member_id)}</div>
       <button class="btn disabled" disabled>只有 ${esc(holder?.name ?? '負責人')} 可以操作</button>
       <span class="muted">需要催的話，在下方留言 @${esc(holder?.name ?? '')}</span>
+      ${others}
     </div>`;
   }
+  const waitingImg = step === 'listing' && p.step === 'cutout';
   const head = (title, sub) => `<div class="row" style="align-items:flex-start"><div style="flex:1"><h2>${title}</h2><div class="sub">${sub}</div></div>
-    <button class="btn small" id="release-btn" title="不做了，放回給其他${esc(roleName(role))}">放回待認領</button></div>`;
-  const retBtn = p.step !== 'open' ? `<button class="btn danger act" data-open-return>${['mkt_check', 'optimizing'].includes(p.step) ? '退回…' : '退回上一步…'}</button>` : '';
-  const foot = (btn, miss = '') => `<div class="row" style="margin-top:14px">${retBtn}<span class="missing" id="miss">${esc(miss)}</span><span class="spacer"></span>${btn}</div>${p.step !== 'open' ? returnForm(p) : ''}`;
-  const toTxt = esc(nextHint(p));
-  switch (p.step) {
-    case 'open': {
-      const n = p.photos.filter((ph) => ph.kind === 'pick').length;
-      return `<div class="card action mine">${returned}${head('開單・上傳選品照片', `${timeLine}。上傳後交給美編去背；最後的行銷檢查也是你。`)}
-        <div class="row" style="margin-bottom:12px">${shop}</div>
-        ${photoGrid(p, 'pick', { upload: true, del: true })}
-        ${foot(`<button class="btn primary act" id="complete-btn" ${n ? '' : 'disabled'}>開單完成 → ${toTxt}</button>`, n ? '' : '至少 1 張選品照片')}</div>`;
-    }
+    <button class="btn small" id="release-btn" title="不做了，放回給其他${esc(roleName(role))}">放回待認領</button></div>${others}`;
+  const canReturn = !waitingImg && step !== 'cutout';
+  const retBtn = canReturn ? `<button class="btn danger act" data-open-return>${['mkt_check', 'optimizing'].includes(step) ? '退回…' : '退回上一步…'}</button>` : '';
+  const foot = (btn, miss = '') => `<div class="row" style="margin-top:14px">${retBtn}<span class="missing" id="miss">${esc(miss)}</span><span class="spacer"></span>${btn}</div>${canReturn ? returnForm(p) : ''}`;
+  const toTxt = esc(nextHint(p, step));
+  switch (step) {
     case 'cutout': {
       const n = p.photos.filter((ph) => ph.kind === 'cutout').length;
-      return `<div class="card action mine">${returned}${head('去背・做首圖去背', `${timeLine}。選品照片有問題就退回行銷。`)}
-        <div class="kind-title">選品照片</div>${photoGrid(p, 'pick', { download: true })}
-        <div class="kind-title">去背圖</div>${photoGrid(p, 'cutout', { upload: true, del: true })}
-        ${foot(`<button class="btn primary act" id="complete-btn" ${n ? '' : 'disabled'}>去背完成 → ${toTxt}</button>`, n ? '' : '請上傳去背圖')}</div>`;
+      return `<div class="card action mine">${returned}${head('做圖', `做好上傳，上架人員就能上架。`)}
+        <div class="row" style="margin-bottom:12px">${shop}</div>
+        <div class="kind-title">商品圖（含去背）</div>${photoGrid(p, 'cutout', { upload: true, del: true })}
+        ${foot(`<button class="btn primary act" id="complete-btn" ${n ? '' : 'disabled'}>圖做好了 → ${toTxt}</button>`, n ? '' : '請上傳做好的圖')}</div>`;
     }
     case 'listing': {
       const url = p.rename_pending ? '' : (p.sl_url || p.link || '');
@@ -746,31 +714,30 @@ function actionPanel(p) {
         <li>到試算表「銷售型-投廣素材」：這件的 D 欄換成新網址；舊網址那一列移到最下面，狀態寫「<b>已更名失效</b>」。</li>
         <li>把新網址貼到下面，按完成，會直接交回設計師。</li></ol>
         <div class="muted">舊網址：${esc(p.link)}</div></div>` : '';
-      return `<div class="card action mine">${returned}${rename}${head('上架・上 Shopline', `${timeLine}。用選品照片和去背圖上架，去背有問題就退回美編。`)}
-        <div class="kind-title">選品照片</div>${photoGrid(p, 'pick', { download: true })}
-        <div class="kind-title">去背圖</div>${photoGrid(p, 'cutout', { download: true })}
+      return `<div class="card action mine">${returned}${rename}${head('文案・上架', `可以先寫文案；美編的圖做好才能按「已上架」。圖有問題就退回美編。`)}
+        <div class="kind-title">美編做好的圖</div>${photoGrid(p, 'cutout', { download: true })}
         <label class="field" style="margin-top:14px"><span>Shopline 商品網址</span><input type="url" id="sl-url" value="${esc(url)}" placeholder="https://"></label>
-        ${foot(`<button class="btn primary act" id="complete-btn">已上架 → ${toTxt}</button>`)}</div>`;
+        ${foot(`<button class="btn primary act" id="complete-btn" ${waitingImg ? 'disabled data-wait="1"' : ''}>已上架 → ${toTxt}</button>`, waitingImg ? '美編的圖還沒做好' : '')}</div>`;
     }
     case 'optimizing': {
-      return `<div class="card action mine">${returned}${head('優化・直接改 Shopline 線上頁面', `${timeLine}。上架有問題就退回上架人員。`)}
+      return `<div class="card action mine">${returned}${head('優化・直接改 Shopline 線上頁面', `文案或圖有問題就退回。`)}
         <div class="row" style="margin-bottom:12px">${shop}</div>
-        <div class="kind-title">選品照片・去背圖（參考）</div>${photoGrid(p, 'pick', { download: true })}${photoGrid(p, 'cutout', { download: true })}
+        <div class="kind-title">商品圖（參考）</div>${photoGrid(p, 'cutout', { download: true })}
         <div class="kind-title">優化截圖（選填）</div>${photoGrid(p, 'opt', { upload: true, del: true })}
         <label class="field" style="margin-top:14px"><span>改了什麼（必填）</span><textarea id="opt-note" placeholder="例：換主圖、補尺寸表、調整比例"></textarea></label>
         ${foot(`<button class="btn primary act" id="complete-btn" disabled>已更新線上 → ${toTxt}</button>`, '請填寫改了什麼')}</div>`;
     }
     case 'mkt_check': {
       const lastOpt = [...p.stints].reverse().find((s) => s.step === 'optimizing' && s.end_note);
-      return `<div class="card action mine">${head('行銷檢查・投放前最後確認', `${timeLine}。哪一步有問題就退回那一步，改好直接回到你這裡。`)}
+      return `<div class="card action mine">${head('行銷檢查・投放前最後確認', `哪一步有問題就退回那一步，改好直接回到你這裡。`)}
         <div class="row" style="margin-bottom:12px">${shop.replace('class="btn"', 'class="btn primary"')}</div>
         ${lastOpt ? `<div class="returned soft"><b>${esc(member(lastOpt.member_id)?.name ?? '')} 改了什麼</b><div class="note">${esc(lastOpt.end_note)}</div></div>` : ''}
-        <div class="kind-title">去背圖</div>${photoGrid(p, 'cutout')}
+        <div class="kind-title">商品圖</div>${photoGrid(p, 'cutout')}
         <div class="kind-title">優化截圖</div>${photoGrid(p, 'opt')}
         ${foot('<button class="btn go act" id="complete-btn">檢查通過 → 已完成</button>')}</div>`;
     }
     default:
-      return '';
+      return `<div class="card action locked"><h2>${esc(stepLabel(step))}</h2><div class="sub">舊流程的步驟，請管理員直接推到下一關。</div></div>`;
   }
 }
 
@@ -789,29 +756,7 @@ function rushBlock(p) {
   </div>`;
 }
 
-function stepsBlock(p) {
-  return `<div class="card section"><h2>每一步花了多久 <span class="muted">跟團隊平均比</span></h2>
-    <table class="rank"><thead><tr><th>步驟</th><th class="num">花了</th><th class="num">平均</th><th class="num">差</th></tr></thead>
-    <tbody>${FLOW.map((s) => {
-      const x = p.steps[s];
-      const started = x.held > 0 || p.step === s;
-      return `<tr><td>${esc(stepLabel(s))}${x.rounds > 1 ? ` <span class="tag red">${x.rounds} 輪</span>` : ''}</td>
-        <td class="num mono">${started ? esc(fmtWork(x.held)) : '—'}${x.pool ? `<div class="muted">等認領 ${esc(fmtWork(x.pool))}</div>` : ''}</td>
-        <td class="num mono">${x.avg != null ? esc(fmtWork(x.avg)) : '—'}</td>
-        <td class="num">${started && x.diff != null ? `<span class="var ${diffCls(x.diff)}">${esc(diffTxt(x.diff))}</span>` : '—'}</td></tr>`;
-    }).join('')}</tbody></table>
-  </div>`;
-}
 
-function attributionBlock(p) {
-  if (!p.attribution.length) return '';
-  const total = p.attribution.reduce((s, a) => s + a.held, 0) || 1;
-  return `<div class="card section">
-    <h2>時間歸屬 <span class="muted">上班時數</span></h2>
-    <div class="attr-bar">${p.attribution.map((a) => `<div style="width:${(a.held / total) * 100}%;background:${member(a.member_id)?.color ?? '#D8CFE3'}" title="${esc(member(a.member_id)?.name ?? '等人認領')} ${a.held}h"></div>`).join('')}</div>
-    ${p.attribution.map((a) => `<div class="attr-row">${a.member_id ? who(a.member_id) : '<span class="who muted">等人認領</span>'}<span class="muted">${a.steps.map(stepLabel).join('、')}</span><span class="num mono">${a.held}h</span></div>`).join('')}
-  </div>`;
-}
 
 function timelineBlock(p) {
   const items = [...p.stints].reverse();
@@ -819,7 +764,7 @@ function timelineBlock(p) {
   return `<div class="card section"><h2>流程紀錄</h2><ul class="timeline">
     ${items.map((s) => `<li class="${s.start_reason === 'return' ? 'ret' : ''} ${s.ended_at == null ? 'open' : ''}">
         <b>${esc(stepLabel(s.step))}</b>・${s.member_id ? esc(member(s.member_id)?.name ?? '—') : '<span class="muted">等人認領</span>'}
-        <span class="muted">${fmtTime(s.started_at)} → ${s.ended_at ? fmtTime(s.ended_at) + ' ' + (END[s.end_reason] || '') : '進行中'}・${esc(fmtWork(s.held))}</span>
+        <span class="muted">${fmtTime(s.started_at)} → ${s.ended_at ? fmtTime(s.ended_at) + ' ' + (END[s.end_reason] || '') : '進行中'}</span>
         ${s.start_reason === 'return' ? `<div class="note"><b>被 ${esc(member(s.by_id)?.name ?? '')} 退回</b>\n${esc(s.note)}</div>` : ''}
         ${s.start_reason === 'reassign' ? `<div class="muted">由 ${esc(member(s.by_id)?.name ?? '')} 改派</div>` : ''}
         ${s.start_reason === 'restore' ? '<div class="muted">試算表加回來，恢復</div>' : ''}
@@ -896,12 +841,15 @@ function bindMentionPicker(textarea) {
 
 function adminBar(p) {
   if (!S.me.is_admin || p.step === 'done' || p.delisted_at) return '';
-  const open = p.open;
-  const ms = open ? S.members.filter((m) => m.active && m.roles.includes(open.role)) : [];
+  const sel = (open) => {
+    const ms = S.members.filter((m) => m.active && m.roles.includes(open.role));
+    return `<label class="row" style="gap:6px"><span class="muted">改派${esc(stepLabel(open.step))}</span><select data-reassign="${open.step}" style="width:auto">
+      <option value="">等人認領</option>${ms.map((m) => `<option value="${m.id}" ${m.id === open.member_id ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select></label>`;
+  };
   return `<div class="card admin-bar"><span class="muted">管理員操作</span>
-    ${open ? `<label class="row" style="gap:6px"><span class="muted">改派</span><select id="reassign" style="width:auto">
-      <option value="">等人認領</option>${ms.map((m) => `<option value="${m.id}" ${m.id === open.member_id ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select></label>` : ''}
+    ${(p.opens || []).map(sel).join('')}
     <span class="spacer"></span>
+    ${FLOW.indexOf(p.step) > 0 ? '<button class="btn danger act" id="admin-return">退回…</button>' : ''}
     <button class="btn act" id="admin-advance">直接推到下一關：${esc(nextHint(p))} →</button></div>`;
 }
 
@@ -910,35 +858,33 @@ async function viewProduct(idStr) {
   const p = await api('GET', `/api/products/${id}`);
   const idx = STEP_ORDER.indexOf(p.step);
   const nextId = S.radarKeys[S.radarKeys.indexOf(id) + 1] || (S.radarKeys[0] !== id ? S.radarKeys[0] : null);
-  const cur = p.open && p.steps[p.step];
-  const level = cur && p.open ? cur.level : 'ok';
   $app.innerHTML = `
     <div class="page-head">
       <a href="#/overview" class="btn small">← 全覽</a>
       ${thumb(p.id, p.thumb_ver, 'md')}
       <h1>${shopName(p.name, p.link)}</h1>${statusBadge(p)}${stepChip(p.step)}
       ${p.delisted_at ? '<span class="tag red">已下架</span>' : ''}
-      ${level === 'very' ? '<span class="tag red">很慢</span>' : level === 'slow' ? '<span class="tag yellow">偏慢</span>' : ''}
       ${p.sheet_status ? `<span class="muted">試算表：${esc(p.sheet_status)}</span>` : p.source === 'manual' ? '<span class="muted">手動開單</span>' : ''}
       <span class="spacer"></span>
       ${nextId ? `<a class="btn small" href="#/p/${nextId}">下一件 →</a>` : ''}
       ${S.me.is_admin ? '<button class="btn small danger" id="del-product">刪除</button>' : ''}
     </div>
-    <div class="stepper">${STEP_ORDER.map((s, i) => `<div class="step ${i < idx ? 'done' : ''} ${i === idx ? 'cur' : ''}" style="${i === idx ? `background:${STEP_COLOR[s]}` : ''}">${i < idx ? '✓ ' : ''}${esc(stepLabel(s))}</div>`).join('')}</div>
+    <div class="stepper">${STEP_ORDER.map((s, i) => {
+      const on = i === idx || (p.opens || []).some((o) => o.step === s);
+      return `<div class="step ${i < idx && !on ? 'done' : ''} ${on ? 'cur' : ''}" style="${on ? `background:${STEP_COLOR[s]}` : ''}">${i < idx && !on ? '✓ ' : ''}${esc(stepLabel(s))}</div>`;
+    }).join('')}</div>
     <div id="action">${actionPanel(p)}</div>
     ${adminBar(p)}
     <div class="detail">
       <div>
         <div class="card section"><h2>圖片</h2>
-          ${['pick', 'cutout', 'opt'].filter((k) => p.photos.some((ph) => ph.kind === k)).map((k) => `<div class="kind-title">${KIND[k]}</div>${photoGrid(p, k, { download: true })}`).join('') || '<div class="muted">尚無圖片</div>'}
+          ${['cutout', 'opt', 'pick'].filter((k) => p.photos.some((ph) => ph.kind === k)).map((k) => `<div class="kind-title">${KIND[k]}</div>${photoGrid(p, k, { download: true })}`).join('') || '<div class="muted">尚無圖片</div>'}
         </div>
         ${commentsBlock(p)}
       </div>
       <div>
         ${rushBlock(p)}
-        ${stepsBlock(p)}
-        ${attributionBlock(p)}
-        ${timelineBlock(p)}
+        ${S.me.is_admin ? timelineBlock(p) : ''}
       </div>
     </div>`;
   bindProduct(p);
@@ -946,14 +892,15 @@ async function viewProduct(idStr) {
 
 function bindProduct(p) {
   const id = p.id;
+  const cur = chosenStint(p);
   const doAction = (action, extra = {}, doneMsg = null) => act(async () => {
-    await api('POST', `/api/products/${id}/action`, { action, version: p.version, step: p.step, ...extra });
+    await api('POST', `/api/products/${id}/action`, { action, version: p.version, step: action === 'admin_advance' ? p.step : (cur?.step ?? p.step), ...extra });
     $app.querySelectorAll('[data-dirty]').forEach((el) => delete el.dataset.dirty);
     if (doneMsg) { S.handled = { name: p.name, to: doneMsg, at: Date.now() }; location.hash = '#/radar'; }
   }, doneMsg ? null : '已完成', doneMsg ? 'none' : 'refresh');
 
   const cb = document.getElementById('claim-btn');
-  if (cb) cb.onclick = () => claim(id, p.version, p.step);
+  if (cb) cb.onclick = () => claim(id, p.version, cur.step);
   const rb = document.getElementById('release-btn');
   if (rb) rb.onclick = () => confirm('放回待認領？其他同身分的人就能接手。') && doAction('release');
 
@@ -987,8 +934,8 @@ function bindProduct(p) {
       const sync = () => {
         const v = slUrl.value.trim();
         const ok = /^https?:\/\//.test(v) && !sameAsOld(v);
-        done.disabled = !ok;
-        miss.textContent = ok ? '' : sameAsOld(v) ? '這是舊網址，請貼改名後的新網址' : '請貼上 Shopline 商品網址';
+        done.disabled = !ok || !!done.dataset.wait;
+        miss.textContent = done.dataset.wait ? '美編的圖還沒做好，做好才能按已上架' : ok ? '' : sameAsOld(v) ? '這是舊網址，請貼改名後的新網址' : '請貼上 Shopline 商品網址';
       };
       slUrl.oninput = sync;
       sync();
@@ -996,7 +943,7 @@ function bindProduct(p) {
     if (optNote) optNote.oninput = () => { done.disabled = !optNote.value.trim(); miss.textContent = optNote.value.trim() ? '' : '請填寫改了什麼'; };
     done.onclick = () => {
       const extra = slUrl ? { sl_url: slUrl.value.trim() } : optNote ? { note: optNote.value.trim() } : {};
-      doAction('complete', extra, p.step === 'mkt_check' ? '檢查通過，已完成' : `已交給 ${nextHint(p)}`);
+      doAction('complete', extra, cur.step === 'mkt_check' ? '檢查通過，已完成' : `已交給 ${nextHint(p, cur.step)}`);
     };
   }
 
@@ -1041,13 +988,36 @@ function bindProduct(p) {
   if (rc) rc.onclick = () => confirm('取消插隊？') && act(() => api('PUT', `/api/products/${id}/rush`, { date: null }), '已取消插隊');
 
   // 管理員
-  const ra = document.getElementById('reassign');
-  if (ra) {
+  $app.querySelectorAll('[data-reassign]').forEach((ra) => {
     ra.onchange = () => {
       const name = ra.value ? ra.options[ra.selectedIndex].text : '等人認領';
       if (!confirm(`改派給「${name}」？`)) { delete ra.dataset.dirty; return refresh(); }
-      act(() => api('POST', `/api/products/${id}/action`, { action: 'reassign', version: p.version, member_id: Number(ra.value) || null }), '已改派');
+      act(() => api('POST', `/api/products/${id}/action`, { action: 'reassign', version: p.version, step: ra.dataset.reassign, member_id: Number(ra.value) || null }), '已改派');
     };
+  });
+  const aret = document.getElementById('admin-return');
+  if (aret) {
+    const before = FLOW.slice(0, FLOW.indexOf(p.step));
+    aret.onclick = () => openModal(`
+      <h3>退回</h3>
+      <p class="muted">退回的那一步改好後，直接交回「${esc(stepLabel(p.step))}」。會記一次退件在那一步上次做的人身上。</p>
+      <div class="field"><span>退回哪一步</span><div class="hour-pick" id="ar-target">${before.map((t) => `<label><input type="radio" name="ar" value="${t}">${esc(stepLabel(t))}</label>`).join('')}</div></div>
+      <label class="field"><span>哪裡有問題（必填）</span><textarea id="ar-note"></textarea></label>
+      <div class="acts"><button class="btn" data-close>取消</button><button class="btn warn" id="ar-go" disabled>送出退回</button></div>`,
+    (m, close) => {
+      const sync = () => {
+        m.querySelectorAll('.hour-pick label').forEach((l) => l.classList.toggle('on', l.querySelector('input').checked));
+        m.querySelector('#ar-go').disabled = !(m.querySelector('[name=ar]:checked') && m.querySelector('#ar-note').value.trim());
+      };
+      m.addEventListener('input', sync);
+      m.addEventListener('change', sync);
+      m.querySelector('#ar-go').onclick = () => {
+        const target = m.querySelector('[name=ar]:checked').value;
+        const note = m.querySelector('#ar-note').value.trim();
+        close();
+        act(() => api('POST', `/api/products/${id}/action`, { action: 'return', version: p.version, step: p.step, target, note }), `已退回「${stepLabel(target)}」`);
+      };
+    });
   }
   const adv = document.getElementById('admin-advance');
   if (adv) {
@@ -1094,8 +1064,21 @@ function bindProduct(p) {
 // ---------- 成效分析 ----------
 
 async function viewAnalysis() {
+  if (!S.me.is_admin) { $app.innerHTML = '<p class="empty">成效分析目前只有管理員看得到</p>'; return; }
   const a = S.ana;
-  const r = await api('GET', `/api/analysis?days=${a.days}`);
+  const [r, ov] = await Promise.all([api('GET', `/api/analysis?days=${a.days}`), api('GET', '/api/overview?filter=all')]);
+  const live = ov.rows.filter((x) => !x.done);
+  const slowRows = live.filter((x) => x.level !== 'ok').sort((x, y) => y.diff - x.diff);
+  const chip = (label, n, k = '') => `<div class="kpi-chip ${k}"><span>${label}</span><b class="mono">${n}</b></div>`;
+  const dash = `<div class="ov-kpis">
+      ${chip('進行中', live.length)}
+      ${chip('等人認領', live.filter((x) => x.cells.some((c) => c.state === 'current' && c.waiting)).length)}
+      ${chip('比平均慢', slowRows.length, 'k-ruby')}
+      ${chip('退件', ov.rows.reduce((n, x) => n + x.returns, 0), 'k-topaz')}
+      ${chip('插隊逾期', live.filter((x) => x.rush?.overdue).length, 'k-ruby')}
+      ${chip('已完成', ov.counts.done, 'k-emerald')}
+    </div>
+`;
   const m = r.metrics;
   const team = r.ranking.team_avg;
   const kpi = (label, value, unit, hint) => `<div class="card kpi"><div class="label">${label}</div><div class="value">${value ?? '—'}${value != null && unit ? `<small> ${unit}</small>` : ''}</div>${hint ? `<div class="hint">${hint}</div>` : ''}</div>`;
@@ -1109,6 +1092,7 @@ async function viewAnalysis() {
       <h1>成效分析</h1>
       <div class="seg" data-f="days">${[[7, '7 天'], [30, '30 天'], [90, '90 天'], [0, '全部']].map(([k, l]) => `<button data-v="${k}" class="${a.days === k ? 'on' : ''}">${l}</button>`).join('')}</div>
     </div>
+    ${dash}
     <div class="kpis">
       ${kpi('完成件數', m.done_count, '件')}
       ${kpi('退件總數', m.returns_total, '次', FLOW.filter((s) => m.returns_by_step[s]).map((s) => `${stepLabel(s)} ${m.returns_by_step[s]}`).join('・') || '')}
@@ -1116,11 +1100,12 @@ async function viewAnalysis() {
       ${kpi('錯過插隊日', m.rush_missed, '件')}
     </div>
     <div class="card section">
-      <h2>每一步的團隊平均 <span class="muted">只算上班時間；「等認領」是還沒人接的時間，看得出哪一關沒人接</span></h2>
+      <h2>每一步的團隊平均 <span class="muted">只算上班時間；工作時間 = 認領後到完成，沒人接的時間另外算，看得出哪一關沒人接</span></h2>
       <div class="table-wrap"><table class="rank">
-        <thead><tr><th>步驟</th><th class="num">平均花多久</th><th class="num">其中等認領</th><th class="num">樣本</th><th class="num">被退件</th></tr></thead>
+        <thead><tr><th>步驟</th><th class="num">平均工作時間</th><th class="num">平均總時間</th><th class="num">其中沒人接</th><th class="num">樣本</th><th class="num">被退件</th></tr></thead>
         <tbody>${FLOW.map((s) => `<tr><td>${stepChip(s)}</td>
           <td class="num mono">${m.steps[s].avg != null ? esc(fmtWork(m.steps[s].avg)) : '資料不足'}</td>
+          <td class="num mono">${m.steps[s].total_avg != null ? esc(fmtWork(m.steps[s].total_avg)) : '—'}</td>
           <td class="num mono">${m.steps[s].pool_avg != null ? esc(fmtWork(m.steps[s].pool_avg)) : '—'}</td>
           <td class="num mono">${m.steps[s].n}</td><td class="num mono">${m.returns_by_step[s]}</td></tr>`).join('')}</tbody>
       </table></div>

@@ -848,7 +848,7 @@ table.done-table tbody tr td:last-child { border-radius: 0 18px 18px 0; }
 /* =====================================================================
    v3：首圖、狀態、認領、同步
    ===================================================================== */
-.stepper { grid-template-columns: repeat(6, 1fr); }
+.stepper { grid-template-columns: repeat(5, 1fr); }
 .thumb { width: 56px; height: 56px; border-radius: 14px; object-fit: cover; background: var(--line-2); display: block; flex: none; border: 2px solid #fff; box-shadow: 0 2px 6px rgba(120, 70, 120, .12); }
 .thumb.noimg { background: linear-gradient(135deg, #F8EEF6, #EFE8FA); }
 .thumb.sm { width: 40px; height: 40px; border-radius: 12px; }
@@ -906,3 +906,6 @@ textarea.code { font: 12px/1.5 'Space Mono', ui-monospace, monospace; min-height
 .rename-box { margin-bottom: 14px; color: var(--ink); }
 .rename-box b { color: var(--topaz); }
 .hour-pick label { font-family: 'Noto Sans TC', sans-serif; font-size: 14px; }
+.pin.parallel { padding: 5px 10px; font-size: 12px; }
+.pin.parallel .mono { display: none; }
+.parallel-line { margin-top: 8px; }
