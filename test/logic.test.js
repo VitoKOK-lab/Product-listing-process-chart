@@ -221,3 +221,13 @@ test('整批匯入的舊件不算團隊平均，也不判偏慢；待辦標出�
   const t = stepTimes(stints, stintHours(stints, at(WED, 9), cfg));
   assert.equal(teamAverages(products.map((p) => ({ ...p, step: 'mkt_check' })), t).optimizing.n, 0);
 });
+
+test('手動新增的商品：Excel 出現同一個網址就視為同一件，改用 Excel 的狀態；沒出現前不會下架', () => {
+  const existing = [{ id: 7, sheet_key: sheetKey('手動耳環', 'https://s.tw/p/m'), name: '手動耳環', link: 'https://s.tw/p/m', source: 'manual' }];
+  let plan = planSync(existing, sheetRows([{ status: '投放中', name: '別的', link: 'https://s.tw/p/x' }]));
+  assert.deepEqual(plan.delist, []);
+  plan = planSync(existing, sheetRows([{ status: '優先製作', name: '手動耳環', link: 'https://s.tw/p/m?utm=ad' }]));
+  assert.deepEqual(plan.inserts, []);
+  assert.equal(plan.updates[0].id, 7);
+  assert.equal(plan.updates[0].row.code, 'B');
+});

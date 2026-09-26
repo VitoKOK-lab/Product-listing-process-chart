@@ -9,7 +9,7 @@ import { sheetRows, planSync, extractOgImage, normalizeLink, sheetKey } from './
 
 const SCHEMA_VERSION = '3';
 // 在 v3 之後加上的欄位：舊資料庫補上
-const ADDED_COLUMNS = { products: [['sheet_row', 'INTEGER'], ['rename_pending', 'INTEGER NOT NULL DEFAULT 0']] };
+const ADDED_COLUMNS = { products: [['sheet_row', 'INTEGER'], ['rename_pending', 'INTEGER NOT NULL DEFAULT 0']], photos: [['angle', 'TEXT']] };
 
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS members (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, color TEXT NOT NULL,
@@ -69,6 +69,10 @@ const DEFAULT_SETTINGS = {
 const NEXT = { open: 'cutout', cutout: 'listing', listing: 'optimizing', optimizing: 'mkt_check', mkt_check: 'done' };
 const PREV = { cutout: 'open', listing: 'cutout', optimizing: 'listing' };
 const PHOTO_STEP = { pick: 'open', cutout: 'cutout', opt: 'optimizing' };
+// 美編做圖的角度：正面、側面、佩戴示意必備；背面、細節特寫選填
+const ANGLES = ['front', 'side', 'wear', 'back', 'detail'];
+const REQUIRED_ANGLES = { front: '正面', side: '側面', wear: '佩戴示意' };
+const COPY_CHECKS = 10; // 商品文案第一階段檢查標準的項目數
 const MAX_PHOTO_BYTES = 10 * 1024 * 1024;
 const MAX_THUMB_BYTES = 5 * 1024 * 1024;
 const THUMBS_PER_CALL = 8; // 每次最多處理幾件，避免超過 Worker 對外連線上限
@@ -484,6 +488,32 @@ route('GET', '/api/radar', async ({ db, me, url, settings }) => {
 
 // ---------- 商品 ----------
 
+// 新增商品（廣告數據表以外的）：上架人員輸入名稱和網址，首圖自動抓；之後 Excel 加了同一個網址就視為同一件
+route('POST', '/api/products', async ({ db, env, request, me }) => {
+  requireMe(me);
+  if (!me.is_admin && !hasRole(me, 'lister')) throw new HttpError(403, '只有上架人員或管理員可以新增商品');
+  const b = await body(request);
+  const name = text(b.name, '商品名稱', 200);
+  const link = String(b.link ?? '').trim().slice(0, 500);
+  if (!/^https?:\/\//.test(link)) throw new HttpError(400, '請貼上商品網址（http 開頭）');
+  const key = sheetKey(name, link);
+  const dup = await db.prepare('SELECT id, name, delisted_at FROM products WHERE sheet_key = ? AND deleted_at IS NULL').bind(key).first();
+  if (dup) throw new HttpError(409, `這個網址已經在系統裡了：${dup.name}`, { id: dup.id });
+  const t = now();
+  const res = await db.prepare(`INSERT INTO products (name, link, sl_url, sheet_key, source, step, created_at, updated_at)
+    VALUES (?, ?, ?, ?, 'manual', 'cutout', ?, ?)`).bind(name, link, link, key, t, t).run();
+  const id = res.meta.last_row_id;
+  await db.batch([
+    ...[['cutout', 'editor'], ['listing', 'lister']].map(([step, role]) => db.prepare(`INSERT INTO stints (product_id, step, member_id, role, started_at, start_reason, by_id)
+      VALUES (?, ?, NULL, ?, ?, 'create', ?)`).bind(id, step, role, t, me.id)),
+    log(db, me.id, 'product_add', id, name),
+  ]);
+  const thumb = await fetchThumb(env, { id, link, thumb_src: null, thumb_ver: 0 });
+  await db.prepare('UPDATE products SET thumb_src = COALESCE(?, thumb_src), thumb_ver = thumb_ver + ?, thumb_checked_at = ?, thumb_error = ? WHERE id = ?')
+    .bind(thumb.src ?? null, thumb.updated ? 1 : 0, now(), thumb.error ?? null, id).run();
+  return json({ id, thumb: !!thumb.updated });
+});
+
 route('GET', '/api/products/:id', async ({ db, me, params, settings }) => {
   requireMe(me);
   const id = intId(params.id);
@@ -491,7 +521,7 @@ route('GET', '/api/products/:id', async ({ db, me, params, settings }) => {
   const t = now();
   const cfg = cfgOf(settings);
   const [photos, comments, stints, mentions, allProducts, allStints] = await Promise.all([
-    db.prepare('SELECT id, kind, filename, uploaded_by, created_at FROM photos WHERE product_id = ? AND deleted_at IS NULL ORDER BY id').bind(id).all(),
+    db.prepare('SELECT id, kind, angle, filename, uploaded_by, created_at FROM photos WHERE product_id = ? AND deleted_at IS NULL ORDER BY id').bind(id).all(),
     db.prepare('SELECT id, member_id, body, created_at FROM comments WHERE product_id = ? AND deleted_at IS NULL ORDER BY id').bind(id).all(),
     db.prepare('SELECT * FROM stints WHERE product_id = ? ORDER BY started_at, id').bind(id).all(),
     db.prepare('SELECT id, member_id, comment_id FROM mentions WHERE product_id = ? AND resolved_at IS NULL').bind(id).all(),
@@ -587,10 +617,17 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params }) =>
     case 'complete': {
       mustHold(); // 做圖、文案可以各自先完成
       if (open.step === 'open' && !(await photoCount('pick'))) throw new HttpError(400, '請至少上傳 1 張選品照片');
-      if (open.step === 'cutout' && !(await photoCount('cutout'))) throw new HttpError(400, '請上傳做好的圖');
+      if (open.step === 'cutout') {
+        const { results: got } = await db.prepare("SELECT DISTINCT angle FROM photos WHERE product_id = ? AND kind = 'cutout' AND deleted_at IS NULL").bind(id).all();
+        const have = new Set(got.map((r) => r.angle));
+        const lack = Object.entries(REQUIRED_ANGLES).filter(([k]) => !have.has(k)).map(([, l]) => l);
+        if (lack.length) throw new HttpError(400, `還缺：${lack.join('、')}`);
+      }
       if (open.step === 'listing') {
         const slUrl = String(b.sl_url ?? '').trim().slice(0, 500);
         if (!/^https?:\/\//.test(slUrl)) throw new HttpError(400, '請貼上 Shopline 商品網址（http 開頭）');
+        const checks = Array.isArray(b.checks) ? b.checks.filter(Boolean).length : 0;
+        if (checks < COPY_CHECKS) throw new HttpError(400, '文案檢查標準 10 項都要確認過才能上架');
         const updates = { sl_url: slUrl };
         const extra = [];
         if (p.rename_pending) {
@@ -754,7 +791,7 @@ route('POST', '/api/sync/sheet', async ({ db, request, me, settings }) => {
     }
   }
   for (const u of plan.updates) {
-    stmts.push(db.prepare('UPDATE products SET name = ?, link = ?, sheet_status = ?, status_code = ?, sheet_row = ?, updated_at = ?, version = version + 1 WHERE id = ?')
+    stmts.push(db.prepare("UPDATE products SET name = ?, link = ?, sheet_status = ?, status_code = ?, sheet_row = ?, source = 'sheet', updated_at = ?, version = version + 1 WHERE id = ?")
       .bind(u.row.name, u.row.link, u.row.status, u.row.code, u.row.row, t, u.id));
   }
   for (const pid of plan.delist) {
@@ -787,6 +824,26 @@ route('POST', '/api/sync/sheet', async ({ db, request, me, settings }) => {
   return json(summary);
 });
 
+// 抓一件商品的首圖：回傳 { updated, src } 或 { error }
+async function fetchThumb(env, p) {
+  try {
+    const page = await fetch(p.link, { redirect: 'follow', signal: AbortSignal.timeout(10000), headers: { 'user-agent': 'Mozilla/5.0 (compatible; TZG-listing/1.0)', accept: 'text/html' } });
+    if (!page.ok) throw new Error(`商品頁 ${page.status}`);
+    const img = extractOgImage(await page.text(), page.url || p.link);
+    if (!img) throw new Error('商品頁沒有首圖');
+    if (img === p.thumb_src && p.thumb_ver > 0) return { updated: false, src: img };
+    const res = await fetch(img, { signal: AbortSignal.timeout(10000) });
+    const type = res.headers.get('content-type') || '';
+    if (!res.ok || !type.startsWith('image/')) throw new Error('首圖下載失敗');
+    const buf = await res.arrayBuffer();
+    if (buf.byteLength > MAX_THUMB_BYTES) throw new Error('首圖超過 5MB');
+    await env.PHOTOS.put(`thumbs/${p.id}`, buf, { httpMetadata: { contentType: type } });
+    return { updated: true, src: img };
+  } catch (e) {
+    return { error: String(e.message || e).slice(0, 100) };
+  }
+}
+
 // 首圖縮圖：打開商品頁讀 og:image，存進 R2；每次處理幾件，前端接著呼叫直到做完
 route('POST', '/api/sync/thumbs', async ({ db, env, request, me }) => {
   requireSync(me);
@@ -799,26 +856,15 @@ route('POST', '/api/sync/thumbs', async ({ db, env, request, me }) => {
   const failed = [];
   const stmts = [];
   await Promise.all(list.map(async (p) => {
-    try {
-      const page = await fetch(p.link, { redirect: 'follow', signal: AbortSignal.timeout(10000), headers: { 'user-agent': 'Mozilla/5.0 (compatible; TZG-listing/1.0)', accept: 'text/html' } });
-      if (!page.ok) throw new Error(`商品頁 ${page.status}`);
-      const img = extractOgImage(await page.text(), page.url || p.link);
-      if (!img) throw new Error('商品頁沒有首圖');
-      if (img === p.thumb_src && p.thumb_ver > 0) {
-        stmts.push(db.prepare('UPDATE products SET thumb_checked_at = ?, thumb_error = NULL WHERE id = ?').bind(t, p.id));
-        return;
-      }
-      const res = await fetch(img, { signal: AbortSignal.timeout(10000) });
-      const type = res.headers.get('content-type') || '';
-      if (!res.ok || !type.startsWith('image/')) throw new Error('首圖下載失敗');
-      const buf = await res.arrayBuffer();
-      if (buf.byteLength > MAX_THUMB_BYTES) throw new Error('首圖超過 5MB');
-      await env.PHOTOS.put(`thumbs/${p.id}`, buf, { httpMetadata: { contentType: type } });
-      stmts.push(db.prepare('UPDATE products SET thumb_src = ?, thumb_ver = thumb_ver + 1, thumb_checked_at = ?, thumb_error = NULL WHERE id = ?').bind(img, t, p.id));
-      updated++;
-    } catch (e) {
+    const r = await fetchThumb(env, p);
+    if (r.error) {
       failed.push(p.name);
-      stmts.push(db.prepare('UPDATE products SET thumb_checked_at = ?, thumb_error = ? WHERE id = ?').bind(t, String(e.message || e).slice(0, 100), p.id));
+      stmts.push(db.prepare('UPDATE products SET thumb_checked_at = ?, thumb_error = ? WHERE id = ?').bind(t, r.error, p.id));
+    } else if (r.updated) {
+      stmts.push(db.prepare('UPDATE products SET thumb_src = ?, thumb_ver = thumb_ver + 1, thumb_checked_at = ?, thumb_error = NULL WHERE id = ?').bind(r.src, t, p.id));
+      updated++;
+    } else {
+      stmts.push(db.prepare('UPDATE products SET thumb_checked_at = ?, thumb_error = NULL WHERE id = ?').bind(t, p.id));
     }
   }));
   const { n: remaining } = await db.prepare(`SELECT COUNT(*) AS n FROM products WHERE deleted_at IS NULL AND delisted_at IS NULL AND link != ''
@@ -851,6 +897,8 @@ route('POST', '/api/products/:id/photos', async ({ db, env, request, me, params 
   if (!open || open.member_id !== me.id) throw new HttpError(403, '只有認領這一步的人可以上傳');
   const files = form.getAll('file').filter((f) => typeof f === 'object' && f.size > 0);
   if (!files.length) throw new HttpError(400, '沒有收到照片');
+  const angle = kind === 'cutout' ? String(form.get('angle') || '') : null;
+  if (kind === 'cutout' && !ANGLES.includes(angle)) throw new HttpError(400, '請選擇圖的角度');
   const t = now();
   const stmts = [];
   for (const f of files) {
@@ -859,8 +907,8 @@ route('POST', '/api/products/:id/photos', async ({ db, env, request, me, params 
     const ext = (f.type.split('/')[1] || 'jpg').replace(/[^a-z0-9]/gi, '').slice(0, 5);
     const key = `products/${id}/${kind}/${crypto.randomUUID()}.${ext}`;
     await env.PHOTOS.put(key, f.stream(), { httpMetadata: { contentType: f.type } });
-    stmts.push(db.prepare('INSERT INTO photos (product_id, kind, r2_key, filename, content_type, uploaded_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .bind(id, kind, key, String(f.name).slice(0, 120), f.type, me.id, t));
+    stmts.push(db.prepare('INSERT INTO photos (product_id, kind, angle, r2_key, filename, content_type, uploaded_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .bind(id, kind, angle, key, String(f.name).slice(0, 120), f.type, me.id, t));
   }
   stmts.push(db.prepare('UPDATE products SET updated_at = ? WHERE id = ?').bind(t, p.id));
   stmts.push(log(db, me.id, 'photo_add', id, `${files.length} 張`));

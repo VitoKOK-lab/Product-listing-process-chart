@@ -11,6 +11,13 @@ const STEP_COLOR = {
 };
 const KIND = { pick: '選品照片', cutout: '商品圖', opt: '優化截圖' };
 const STATUS = { A: '投放中', B: '優先製作', C: '可投放', D: '待製作' };
+// 美編做圖的角度：前三個必備
+const ANGLES = [['front', '正面', true], ['side', '側面', true], ['wear', '佩戴示意', true], ['back', '背面／底部', false], ['detail', '細節特寫', false]];
+// 上架人員：商品文案第一階段檢查標準
+const COPY_SOP = [
+  '商品名稱正確', '寶石名稱正確', '克拉數正確', '材質正確', '證書資訊正確', '價格正確', '圖片需求清楚', '佩戴比例清楚', '不亂加未確認賣點',
+  '來源、產地、特色、賣點、故事、適合佩戴場景：不需要過度美化，說清楚即可',
+];
 const GROUPS = [
   ['rush', '插隊急件', 'var(--ruby)'],
   ['attention', '被退回・@我', 'var(--amethyst)'],
@@ -199,7 +206,8 @@ async function boot() {
 }
 
 function renderNav() {
-  const items = [['radar', '今天要做'], ['overview', '全覽'], ...(S.me.is_admin ? [['analysis', '成效分析']] : []), ['log', '紀錄'], ...(S.me.is_admin ? [['settings', '設定']] : [])];
+  const canAdd = hasRole('lister') || S.me.is_admin;
+  const items = [['radar', '今天要做'], ['overview', '全覽'], ...(canAdd ? [['new', '新增商品']] : []), ...(S.me.is_admin ? [['analysis', '成效分析']] : []), ['log', '紀錄'], ...(S.me.is_admin ? [['settings', '設定']] : [])];
   document.getElementById('nav').innerHTML = items.map(([r, l]) => `<a href="#/${r}" data-route="${r}">${l}</a>`).join('');
 }
 
@@ -262,8 +270,8 @@ window.addEventListener('hashchange', () => { if (S.me) render(); });
 async function render() {
   const [route, arg] = currentRoute();
   if (route !== 'radar' && document.querySelector('[data-view=radar]')) S.radarScroll = window.scrollY;
-  document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.route === route || (['p', 'new'].includes(route) && a.dataset.route === 'overview')));
-  const views = { overview: viewOverview, radar: viewRadar, analysis: viewAnalysis, log: viewLog, settings: viewSettings, p: viewProduct };
+  document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.route === route || (route === 'p' && a.dataset.route === 'overview')));
+  const views = { overview: viewOverview, radar: viewRadar, analysis: viewAnalysis, log: viewLog, settings: viewSettings, p: viewProduct, new: viewNew };
   try {
     await (views[route] || (S.me.is_admin ? viewOverview : viewRadar))(arg);
   } catch (e) {
@@ -345,6 +353,36 @@ async function viewRadar() {
   const mineN = r.items.filter((i) => i.group !== 'pool').length;
   if (nav && scope === 'me') nav.innerHTML = `今天要做${mineN ? `<span class="badge">${mineN}</span>` : ''}`;
   if (S.radarScroll) { window.scrollTo(0, S.radarScroll); S.radarScroll = 0; }
+}
+
+// ---------- 新增商品（廣告數據表以外） ----------
+
+async function viewNew() {
+  if (!hasRole('lister') && !S.me.is_admin) { $app.innerHTML = '<p class="empty">只有上架人員可以新增商品</p>'; return; }
+  $app.innerHTML = `
+    <div class="page-head"><h1>新增商品</h1></div>
+    <form class="card section" id="new-form" style="max-width:680px">
+      <p class="muted" style="margin-top:0">這裡是「廣告數據表」<b>以外</b>的商品。廣告要用的話，請自己手動加到廣告的 Excel；之後同步時，Excel 裡同一個網址會視為同一件，改用 Excel 的狀態和排序。</p>
+      <label class="field"><span>商品名稱</span><input type="text" name="name" required maxlength="200"></label>
+      <label class="field"><span>商品網址（Shopline 商品頁）</span><input type="url" name="link" required placeholder="https://"></label>
+      <p class="muted">建立後首圖會自動抓進來，接著跟其他商品一樣：美編做圖、上架人員寫文案上架。</p>
+      <div class="row"><span class="spacer"></span><button class="btn primary act">建立</button></div>
+    </form>`;
+  const f = document.getElementById('new-form');
+  f.onsubmit = (e) => {
+    e.preventDefault();
+    act(async () => {
+      try {
+        const r = await api('POST', '/api/products', { name: f.name.value, link: f.link.value.trim() });
+        f.querySelectorAll('[data-dirty]').forEach((el) => delete el.dataset.dirty);
+        toast(r.thumb ? '已建立，首圖已抓到' : '已建立（首圖沒抓到，之後按同步首圖再試）');
+        location.hash = `#/p/${r.id}`;
+      } catch (err) {
+        if (err.data?.id && confirm(`${err.message}\n要打開那一件嗎？`)) { location.hash = `#/p/${err.data.id}`; return; }
+        throw err;
+      }
+    }, null, 'none');
+  };
 }
 
 // ---------- 全覽（首頁） ----------
@@ -596,20 +634,23 @@ async function resizeImage(file) {
   }
 }
 
-async function uploadPhotos(productId, kind, files) {
+async function uploadPhotos(productId, spec, files) {
+  const [kind, angle] = spec.split(':');
   const imgs = [...files].filter((f) => f.type.startsWith('image/'));
   if (!imgs.length) return toast('請選擇圖片檔', true);
   await act(async () => {
     toast(`上傳中… ${imgs.length} 張`);
     const fd = new FormData();
     fd.append('kind', kind);
+    if (angle) fd.append('angle', angle);
     for (const f of imgs) fd.append('file', await resizeImage(f));
     await api('POST', `/api/products/${productId}/photos`, fd);
   }, `已上傳 ${imgs.length} 張`);
 }
 
-function photoGrid(p, kind, { upload = false, del = false, download = false } = {}) {
-  const list = p.photos.filter((ph) => ph.kind === kind);
+function photoGrid(p, kind, { upload = false, del = false, download = false, angle = null, label = null } = {}) {
+  const list = p.photos.filter((ph) => ph.kind === kind && (!angle || ph.angle === angle));
+  const spec = angle ? `${kind}:${angle}` : kind;
   return `<div class="photos">
     ${list.map((ph) => `<div class="photo">
         <img loading="lazy" src="/api/photos/${ph.id}" data-full="/api/photos/${ph.id}" alt="${esc(ph.filename)}" title="${esc(member(ph.uploaded_by)?.name ?? '')} · ${fmtTime(ph.created_at)}">
@@ -618,7 +659,7 @@ function photoGrid(p, kind, { upload = false, del = false, download = false } = 
           ${del ? `<button class="btn small danger" data-del-photo="${ph.id}">刪除</button>` : ''}
         </div>
       </div>`).join('')}
-    ${upload ? `<label class="dropzone" data-drop="${kind}"><input type="file" accept="image/*" multiple hidden data-file="${kind}"><span>＋ 上傳${KIND[kind]}<br><span class="muted">點選或拖曳，可多張</span></span></label>` : ''}
+    ${upload ? `<label class="dropzone" data-drop="${spec}"><input type="file" accept="image/*" multiple hidden data-file="${spec}"><span>＋ 上傳${esc(label || KIND[kind])}<br><span class="muted">點選或拖曳，可多張</span></span></label>` : ''}
     ${!upload && !list.length ? '<div class="muted">尚無</div>' : ''}
   </div>`;
 }
@@ -698,16 +739,35 @@ function actionPanel(p) {
   const head = (title, sub) => `<div class="row" style="align-items:flex-start"><div style="flex:1"><h2>${title}</h2><div class="sub">${sub}</div></div>
     <button class="btn small" id="release-btn" title="不做了，放回給其他${esc(roleName(role))}">放回待認領</button></div>${others}`;
   const canReturn = step !== 'cutout' && open.step === p.step && !imgPending;
-  const retBtn = canReturn ? `<button class="btn danger act" data-open-return>${['mkt_check', 'optimizing'].includes(step) ? '退回…' : '退回上一步…'}</button>` : '';
-  const foot = (btn, miss = '') => `<div class="row" style="margin-top:14px">${retBtn}<span class="missing" id="miss">${esc(miss)}</span><span class="spacer"></span>${btn}</div>${canReturn ? returnForm(p) : ''}`;
+  const backTo = { listing: '美編（圖）', optimizing: '文案或圖', mkt_check: '任一步' }[step] || '';
+  // 中間是自己這一步：往左退回上一步，往右完成交給下一步（行銷檢查往右就是完成）
+  const foot = (btn, miss = '') => `<div class="flowbar">
+      <div class="fb-back">${canReturn ? `<button class="btn danger act" data-open-return>← 退回${esc(backTo)}</button>` : '<span class="muted">沒有上一步</span>'}</div>
+      <div class="fb-cur"><b>${esc(stepLabel(step))}</b><small>你現在這一步</small></div>
+      <div class="fb-next">${btn}</div>
+    </div>
+    <div class="missing fb-miss" id="miss">${esc(miss)}</div>${canReturn ? returnForm(p) : ''}`;
   const toTxt = esc(nextHint(p, step));
   switch (step) {
     case 'cutout': {
-      const n = p.photos.filter((ph) => ph.kind === 'cutout').length;
-      return `<div class="card action mine">${returned}${head('做圖', `做好上傳，上架人員就能上架。`)}
-        <div class="row" style="margin-bottom:12px">${shop}</div>
-        <div class="kind-title">商品圖（含去背）</div>${photoGrid(p, 'cutout', { upload: true, del: true })}
-        ${foot(`<button class="btn primary act" id="complete-btn" ${n ? '' : 'disabled'}>圖做好了 → ${toTxt}</button>`, n ? '' : '請上傳做好的圖')}</div>`;
+      const lack = ANGLES.filter(([k, , req]) => req && !p.photos.some((ph) => ph.kind === 'cutout' && ph.angle === k)).map(([, l]) => l);
+      return `<div class="card action mine">${returned}${head('做圖', '拍照或 AI 生成都可以，風格一致、清楚。正面、側面、佩戴示意三個角度都要有。')}
+        <div class="guide">
+          <img src="/guide-photo.webp" data-full="/guide-photo.webp" alt="做圖教學示意圖" title="點一下放大">
+          <div>
+            <b>做圖教學（點左邊的圖放大看範例）</b>
+            <ul><li><b>必備</b>：正面（主體設計）、側面（厚度、鑲嵌）、佩戴示意（手、頸、耳朵上的實際效果）</li>
+            <li>選填：背面／底部、細節特寫</li>
+            <li>背景簡潔、光線充足、對焦清晰，不要過度濾鏡</li>
+            <li>尺寸比例用統一角度與光源；AI 生成要真實自然，不誇張</li>
+            <li>最短邊 ≥ 1200 px，JPG 或 PNG</li></ul>
+            <div class="row" style="margin-top:6px">${shop}</div>
+          </div>
+        </div>
+        <div class="angles">${ANGLES.map(([k, l, req]) => `<div class="angle ${req ? 'req' : ''}">
+          <div class="kind-title">${esc(l)}${req ? '<span class="tag red">必備</span>' : '<span class="tag">選填</span>'}</div>
+          ${photoGrid(p, 'cutout', { upload: true, del: true, angle: k, label: l })}</div>`).join('')}</div>
+        ${foot(`<button class="btn primary act" id="complete-btn" ${lack.length ? 'disabled' : ''}>完成 → ${toTxt}</button>`, lack.length ? `還缺：${lack.join('、')}` : '')}</div>`;
     }
     case 'listing': {
       const url = p.rename_pending ? '' : (p.sl_url || p.link || '');
@@ -717,9 +777,14 @@ function actionPanel(p) {
         <li>把新網址貼到下面，按完成，會直接交回設計師。</li></ol>
         <div class="muted">舊網址：${esc(p.link)}</div></div>` : '';
       return `<div class="card action mine">${returned}${rename}${head('文案・上架', imgPending ? '美編的圖還在做，可以先上架；上架後交給設計師。' : '圖有問題就退回美編。')}
+        <div class="sop">
+          <b>商品文案第一階段檢查標準</b>
+          <p class="muted">第一階段文案不是寫美，而是把商品資料寫對、寫清楚、寫完整，讓後面的拍照、AI 生成、修圖、設計都可以直接執行，不需要猜。</p>
+          <div class="sop-list">${COPY_SOP.map((t, i) => `<label><input type="checkbox" data-sop="${i}"><span>${i + 1}. ${esc(t)}</span></label>`).join('')}</div>
+        </div>
         <div class="kind-title">美編做好的圖</div>${photoGrid(p, 'cutout', { download: true })}
         <label class="field" style="margin-top:14px"><span>Shopline 商品網址</span><input type="url" id="sl-url" value="${esc(url)}" placeholder="https://"></label>
-        ${foot(`<button class="btn primary act" id="complete-btn">已上架 → ${toTxt}</button>`)}</div>`;
+        ${foot(`<button class="btn primary act" id="complete-btn">完成上架 → ${toTxt}</button>`)}</div>`;
     }
     case 'optimizing': {
       return `<div class="card action mine">${returned}${head('優化・直接改 Shopline 線上頁面', `文案或圖有問題就退回。`)}
@@ -727,7 +792,7 @@ function actionPanel(p) {
         <div class="kind-title">商品圖（參考）</div>${photoGrid(p, 'cutout', { download: true })}
         <div class="kind-title">優化截圖（選填）</div>${photoGrid(p, 'opt', { upload: true, del: true })}
         <label class="field" style="margin-top:14px"><span>改了什麼（必填）</span><textarea id="opt-note" placeholder="例：換主圖、補尺寸表、調整比例"></textarea></label>
-        ${foot(`<button class="btn primary act" id="complete-btn" disabled>已更新線上 → ${toTxt}</button>`, '請填寫改了什麼')}</div>`;
+        ${foot(`<button class="btn primary act" id="complete-btn" disabled>完成優化 → ${toTxt}</button>`, '請填寫改了什麼')}</div>`;
     }
     case 'mkt_check': {
       const lastOpt = [...p.stints].reverse().find((s) => s.step === 'optimizing' && s.end_note);
@@ -736,7 +801,7 @@ function actionPanel(p) {
         ${lastOpt ? `<div class="returned soft"><b>${esc(member(lastOpt.member_id)?.name ?? '')} 改了什麼</b><div class="note">${esc(lastOpt.end_note)}</div></div>` : ''}
         <div class="kind-title">商品圖</div>${photoGrid(p, 'cutout')}
         <div class="kind-title">優化截圖</div>${photoGrid(p, 'opt')}
-        ${foot('<button class="btn go act" id="complete-btn">檢查通過 → 已完成</button>')}</div>`;
+        ${foot('<button class="btn go act" id="complete-btn">檢查通過・完成 ✓</button>')}</div>`;
     }
     default:
       return `<div class="card action locked"><h2>${esc(stepLabel(step))}</h2><div class="sub">舊流程的步驟，請管理員直接推到下一關。</div></div>`;
@@ -933,18 +998,22 @@ function bindProduct(p) {
     const optNote = document.getElementById('opt-note');
     if (slUrl) {
       const sameAsOld = (v) => p.rename_pending && v.replace(/[?#].*$/, '').replace(/\/+$/, '') === String(p.link).replace(/[?#].*$/, '').replace(/\/+$/, '');
+      const sops = [...$app.querySelectorAll('[data-sop]')];
       const sync = () => {
         const v = slUrl.value.trim();
         const ok = /^https?:\/\//.test(v) && !sameAsOld(v);
-        done.disabled = !ok;
-        miss.textContent = ok ? '' : sameAsOld(v) ? '這是舊網址，請貼改名後的新網址' : '請貼上 Shopline 商品網址';
+        const unchecked = sops.filter((c) => !c.checked).length;
+        sops.forEach((c) => c.parentElement.classList.toggle('on', c.checked));
+        done.disabled = !ok || unchecked > 0;
+        miss.textContent = unchecked ? `檢查標準還有 ${unchecked} 項沒確認` : ok ? '' : sameAsOld(v) ? '這是舊網址，請貼改名後的新網址' : '請貼上 Shopline 商品網址';
       };
       slUrl.oninput = sync;
+      sops.forEach((c) => { c.onchange = sync; });
       sync();
     }
     if (optNote) optNote.oninput = () => { done.disabled = !optNote.value.trim(); miss.textContent = optNote.value.trim() ? '' : '請填寫改了什麼'; };
     done.onclick = () => {
-      const extra = slUrl ? { sl_url: slUrl.value.trim() } : optNote ? { note: optNote.value.trim() } : {};
+      const extra = slUrl ? { sl_url: slUrl.value.trim(), checks: [...$app.querySelectorAll('[data-sop]')].map((c) => c.checked) } : optNote ? { note: optNote.value.trim() } : {};
       doAction('complete', extra, cur.step === 'mkt_check' ? '檢查通過，已完成' : `已交給 ${nextHint(p, cur.step)}`);
     };
   }

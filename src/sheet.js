@@ -65,7 +65,7 @@ export function planSync(existing, rows) {
     if (p.deleted_at) continue; // 被管理員刪除的不動
     if (p.delisted_at && !inactive) plan.restore.push({ id: p.id, row: r });
     if (p.name !== r.name || (p.link || '') !== r.link || (p.sheet_status || '') !== r.status || (p.status_code || '') !== r.code
-      || (p.sheet_row ?? null) !== (r.row ?? null)) {
+      || (p.sheet_row ?? null) !== (r.row ?? null) || p.source !== 'sheet') {
       plan.updates.push({ id: p.id, row: r });
     }
   }
