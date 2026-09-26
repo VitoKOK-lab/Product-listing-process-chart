@@ -199,13 +199,13 @@ async function boot() {
   renderNav();
   document.getElementById('me').innerHTML = `${avatar(S.me)}<span>${esc(S.me.name)}</span><span class="roles">${esc(rolesText(S.me) || (S.me.is_admin ? '管理員' : ''))}</span>`;
   S.version = (await api('GET', '/api/version')).v;
-  if (!location.hash) location.hash = S.me.is_admin ? '#/overview' : '#/radar';
+  if (!location.hash) location.hash = '#/overview';
   await render();
 }
 
 function renderNav() {
   const canAdd = hasRole('lister') || S.me.is_admin;
-  const items = [['radar', '今天要做'], ['overview', '全覽'], ...(canAdd ? [['new', '新增商品']] : []), ...(S.me.is_admin ? [['analysis', '成效分析']] : []), ['log', '紀錄'], ['help', '使用說明'], ...(S.me.is_admin ? [['settings', '設定']] : [])];
+  const items = [['overview', '全覽'], ['radar', '今天要做'], ...(canAdd ? [['new', '新增商品']] : []), ...(S.me.is_admin ? [['analysis', '成效分析']] : []), ['log', '紀錄'], ['help', '使用說明'], ...(S.me.is_admin ? [['settings', '設定']] : [])];
   document.getElementById('nav').innerHTML = items.map(([r, l]) => `<a href="#/${r}" data-route="${r}">${l}</a>`).join('');
 }
 
@@ -262,7 +262,7 @@ function renderLogin() {
 
 // ---------- router ----------
 
-const currentRoute = () => (location.hash.replace(/^#\/?/, '') || (S.me?.is_admin ? 'overview' : 'radar')).split('/');
+const currentRoute = () => (location.hash.replace(/^#\/?/, '') || 'overview').split('/');
 window.addEventListener('hashchange', () => { if (S.me) render(); });
 
 async function render() {
@@ -271,7 +271,7 @@ async function render() {
   document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.route === route || (route === 'p' && a.dataset.route === 'overview')));
   const views = { overview: viewOverview, radar: viewRadar, analysis: viewAnalysis, log: viewLog, settings: viewSettings, p: viewProduct, new: viewNew, help: viewHelp };
   try {
-    await (views[route] || (S.me.is_admin ? viewOverview : viewRadar))(arg);
+    await (views[route] || viewOverview)(arg);
   } catch (e) {
     if (!e.network) $app.innerHTML = `<p class="empty">${esc(e.message)}</p>`;
   }
@@ -382,7 +382,7 @@ const HELP = {
         <li><b>發現前面有問題按「← 退回」</b>：寫清楚哪裡不對，會回到做那一步的人手上；他改好會直接交回給你。</li>
       </ol>
       <h3>每天打開要看哪裡</h3>
-      <p>登入後第一頁就是「<b>今天要做</b>」。最上面那一張粉紅框是「建議你現在先做這件」，照順序做就對了：插隊的最先，其次是被退回的，再來依投放優先（A 投放中 → B 優先製作 → C 可投放 → D 待製作）。</p>`,
+      <p>登入後第一頁是「<b>全覽</b>」，看得到所有商品走到哪。要找自己的工作，點「<b>今天要做</b>」：只列出你手上的和你可以領的，最上面那一張粉紅框是「建議你現在先做這件」，照順序做就對了：插隊的最先，其次是被退回的，再來依投放優先（A 投放中 → B 優先製作 → C 可投放 → D 待製作）。</p>`,
   },
   marketing: {
     name: '行銷',
