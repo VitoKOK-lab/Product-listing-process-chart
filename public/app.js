@@ -383,7 +383,7 @@ function suggestWhy(it) {
 // 員工版今天要做：只有兩區（我手上的、可以接的），一張卡一個按鈕
 function simpleCard(it) {
   const md = it.rush ? it.rush.date.slice(5).replace('-', '/') : '';
-  return `<div class="card scard ${it.suggest ? 'first' : ''}" data-href="#/p/${it.product_id}">
+  return `<div class="card scard ${it.suggest ? 'first' : ''}" data-href="#/p/${it.product_id}" data-name="${esc(it.name.toLowerCase())}">
     ${thumb(it.product_id, it.thumb)}
     <div class="sc-main">
       <div class="sc-name">${esc(it.name)}</div>
@@ -407,6 +407,7 @@ async function viewStaffRadar() {
   $app.innerHTML = `
     <div data-view="radar" class="staff-home">
       <div class="page-head"><h1>今天要做</h1><span class="spacer"></span>${hasRole('lister') ? '<a class="btn small" href="#/new">＋ 新增商品</a>' : ''}</div>
+      <input type="search" id="find" class="find" placeholder="搜尋商品名稱" value="${esc(S.find || '')}" autocomplete="off">
       ${mine.length ? `<h2 class="sh">我手上的 <span class="num">${mine.length}</span></h2><div class="slist">${mine.map(simpleCard).join('')}</div>` : ''}
       ${pool.length ? `<h2 class="sh">可以接的 <span class="num">${pool.length}</span></h2><div class="slist">${pool.map(simpleCard).join('')}</div>` : ''}
       ${!mine.length && !pool.length ? '<div class="card calm"><b>目前沒有工作</b></div>' : ''}
@@ -424,6 +425,20 @@ async function viewStaffRadar() {
     };
   });
   $app.querySelectorAll('.to-pick').forEach((sel) => { sel.onclick = (e) => e.stopPropagation(); });
+  // 搜尋：打字就篩選，重新整理後保留
+  const find = document.getElementById('find');
+  const applyFind = () => {
+    S.find = find.value;
+    const q = find.value.trim().toLowerCase();
+    $app.querySelectorAll('.scard').forEach((c) => { c.hidden = !!q && !c.dataset.name.includes(q); });
+    $app.querySelectorAll('.slist').forEach((l) => {
+      const n = l.querySelectorAll('.scard:not([hidden])').length;
+      const h = l.previousElementSibling?.querySelector('.num');
+      if (h) h.textContent = n;
+    });
+  };
+  find.oninput = applyFind;
+  if (find.value) applyFind();
   if (S.radarScroll) { window.scrollTo(0, S.radarScroll); S.radarScroll = 0; }
 }
 

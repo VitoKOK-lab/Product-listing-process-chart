@@ -1105,3 +1105,23 @@ details.hint .guide ul { margin: 0; padding-left: 18px; line-height: 1.8; }
 .to-pick { width: auto; max-width: 200px; padding: 6px 10px; font-size: 13px; border-radius: 999px; }
 .fb-next { display: flex; gap: 8px; align-items: center; justify-content: flex-end; flex-wrap: wrap; }
 @media (max-width: 760px) { .to-pick { max-width: none; flex: 1 1 100%; } }
+/* 工作卡片：按鈕放在名稱下面一整排，名稱不會被擠 */
+.scard, .scard:is(*) { grid-template-columns: 72px minmax(0, 1fr); }
+.scard .sc-acts { grid-column: 2 / -1; justify-content: flex-start; }
+.scard[hidden] { display: none; }
+.find { width: 100%; max-width: 520px; margin: 0 0 6px; padding: 10px 16px; border-radius: 999px; font-size: 15px; }
+@media (max-width: 760px) {
+  .scard, .scard:is(*) { grid-template-columns: 48px minmax(0, 1fr); }
+  .scard .sc-acts { grid-column: 1 / -1; }
+  .find { max-width: none; }
+}
+/* 電腦：一件一行（圖｜名稱｜按鈕）；手機：卡片、按鈕在下面 */
+.slist { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+.scard, .scard:is(*) { grid-template-columns: 64px minmax(0, 1fr) auto; padding: 12px 18px; }
+.scard .thumb { width: 64px; height: 64px; }
+.scard .sc-acts { grid-column: auto; flex-wrap: nowrap; justify-content: flex-end; }
+@media (max-width: 760px) {
+  .scard, .scard:is(*) { grid-template-columns: 48px minmax(0, 1fr); padding: 10px 12px; }
+  .scard .thumb { width: 48px; height: 48px; }
+  .scard .sc-acts { grid-column: 1 / -1; flex-wrap: wrap; justify-content: stretch; }
+}
