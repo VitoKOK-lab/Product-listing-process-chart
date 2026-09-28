@@ -629,6 +629,9 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params }) =>
   // 先不設限制：任何人都可以操作任何一步（之後有人用錯再收）
   const mustHold = () => need();
   const photoCount = async (kind) => (await db.prepare('SELECT COUNT(*) AS n FROM photos WHERE product_id = ? AND kind = ? AND deleted_at IS NULL').bind(id, kind).first()).n;
+  // 指定交給誰（選填）：任何啟用中的成員
+  const assignee = b.assignee ? intId(b.assignee, '交給誰') : null;
+  if (assignee && !(await db.prepare('SELECT id FROM members WHERE id = ? AND active = 1').bind(assignee).first())) throw new HttpError(400, '找不到這個人');
   const forward = async (endReason, extra = {}) => {
     const from = open ? open.step : p.step;
     // 做圖、文案同時進行：另一段已經先往後走了，這一段做完只要收掉
@@ -642,11 +645,13 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params }) =>
     const to = p.return_to && p.return_to !== from ? p.return_to : NEXT[from];
     // 文案那一段已經在進行（同時開始的），不用再開一段
     const running = to !== 'done' && await openStint(db, id, to);
-    const member = to === 'done' || running ? null : await holderFor(db, p, to);
-    return transition(db, p, open, me, {
-      endReason, to, member, skipStint: !!running, updates: { return_to: null, ...(extra.updates || {}) }, endNote: extra.endNote,
+    const member = to === 'done' || running ? null : (assignee ?? await holderFor(db, p, to));
+    const pick = assignee && to === 'mkt_check' ? { marketer_id: assignee } : {};
+    const handTo = running && assignee ? [db.prepare('UPDATE stints SET member_id = ? WHERE id = ?').bind(assignee, running.id)] : [];
+    return [...handTo, ...transition(db, p, open, me, {
+      endReason, to, member, skipStint: !!running, updates: { return_to: null, ...pick, ...(extra.updates || {}) }, endNote: extra.endNote,
       action: extra.action || 'complete', detail: `${STEP_LABEL[from]} → ${STEP_LABEL[to]}${extra.detail ? `：${extra.detail}` : ''}`,
-    });
+    })];
   };
   let stmts;
 
@@ -727,14 +732,14 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params }) =>
       const nudge = running ? [
         db.prepare("UPDATE stints SET ended_at = ?, end_reason = 'nudge' WHERE id = ?").bind(t, running.id),
         db.prepare(`INSERT INTO stints (product_id, step, member_id, role, started_at, start_reason, note, by_id) VALUES (?, ?, ?, ?, ?, 'nudge', ?, ?)`)
-          .bind(id, to, running.member_id, running.role, t, text, me.id),
+          .bind(id, to, assignee ?? running.member_id, running.role, t, text, me.id),
       ] : [];
       if (running && from !== p.step) {
         // 同時進行中的那一段（例如文案還沒完成時催圖）：自己這一段照常繼續
         stmts = [...nudge, log(db, me.id, 'return', id, `${STEP_LABEL[from]} → ${STEP_LABEL[to]}（還在做）：${note.slice(0, 60)}`)];
         break;
       }
-      const member = running ? null : await holderFor(db, p, to);
+      const member = running ? null : (assignee ?? await holderFor(db, p, to));
       stmts = [
         ...transition(db, p, open, me, {
           endReason: 'return', to, member, skipStint: !!running, startReason: 'return', note: text,

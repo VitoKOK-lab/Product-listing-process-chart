@@ -1102,3 +1102,6 @@ details.hint .guide ul { margin: 0; padding-left: 18px; line-height: 1.8; }
   .scard .sc-acts .btn { flex: 1; }
   .scard .sc-go { display: none; }
 }
+.to-pick { width: auto; max-width: 200px; padding: 6px 10px; font-size: 13px; border-radius: 999px; }
+.fb-next { display: flex; gap: 8px; align-items: center; justify-content: flex-end; flex-wrap: wrap; }
+@media (max-width: 760px) { .to-pick { max-width: none; flex: 1 1 100%; } }

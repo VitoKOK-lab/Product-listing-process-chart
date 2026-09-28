@@ -393,6 +393,7 @@ function simpleCard(it) {
     <div class="sc-acts">
       ${returnTargets(it.step).length ? `<button class="btn danger" data-back="${esc(it.key)}">← 退回</button>` : ''}
       ${it.claimable ? `<button class="btn" data-claim="${it.product_id}" data-v="${it.version}" data-step="${it.step}">我來做</button>` : ''}
+      ${it.step === 'optimizing' ? assigneeSelect('mkt_check', `data-to="${esc(it.key)}"`) : ''}
       <button class="btn primary" data-done="${esc(it.key)}">完成 →</button>
     </div>
   </div>`;
@@ -411,17 +412,24 @@ async function viewStaffRadar() {
       ${!mine.length && !pool.length ? '<div class="card calm"><b>目前沒有工作</b></div>' : ''}
     </div>`;
   $app.querySelectorAll('[data-href]').forEach((c) => {
-    c.onclick = (e) => { if (!e.target.closest('a, button')) location.hash = c.dataset.href; };
+    c.onclick = (e) => { if (!e.target.closest('a, button, select')) location.hash = c.dataset.href; };
   });
   $app.querySelectorAll('[data-claim]').forEach((b) => { b.onclick = () => claim(Number(b.dataset.claim), Number(b.dataset.v), b.dataset.step); });
   const byKey = new Map(r.items.map((i) => [i.key, i]));
   $app.querySelectorAll('[data-back]').forEach((b) => { b.onclick = () => openReturnModal(byKey.get(b.dataset.back)); });
-  $app.querySelectorAll('[data-done]').forEach((b) => { b.onclick = () => openCompleteModal(byKey.get(b.dataset.done)); });
+  $app.querySelectorAll('[data-done]').forEach((b) => {
+    b.onclick = () => {
+      const to = $app.querySelector(`[data-to="${CSS.escape(b.dataset.done)}"]`);
+      openCompleteModal(byKey.get(b.dataset.done), Number(to?.value) || null);
+    };
+  });
+  $app.querySelectorAll('.to-pick').forEach((sel) => { sel.onclick = (e) => e.stopPropagation(); });
   if (S.radarScroll) { window.scrollTo(0, S.radarScroll); S.radarScroll = 0; }
 }
 
 async function viewRadar() {
-  if (staff()) return viewStaffRadar();
+  // 員工、或有職務的管理員（例如兼設計師）：用工作卡片，可以直接完成、退回、指定交給誰
+  if (staff() || S.me.roles.length) return viewStaffRadar();
   const scope = S.radarScope;
   const r = await api('GET', `/api/radar?scope=${scope}`);
   S.radarKeys = r.items.map((i) => i.product_id);
@@ -449,7 +457,7 @@ async function viewRadar() {
     </div>`;
   $app.querySelectorAll('[data-scope]').forEach((b) => { b.onclick = () => { S.radarScope = b.dataset.scope; viewRadar(); }; });
   $app.querySelectorAll('[data-href]').forEach((c) => {
-    c.onclick = (e) => { if (!e.target.closest('a, button')) location.hash = c.dataset.href; };
+    c.onclick = (e) => { if (!e.target.closest('a, button, select')) location.hash = c.dataset.href; };
   });
   $app.querySelectorAll('[data-ack]').forEach((b) => { b.onclick = () => act(() => api('POST', `/api/mentions/${b.dataset.ack}/ack`)); });
   $app.querySelectorAll('[data-claim]').forEach((b) => { b.onclick = () => claim(Number(b.dataset.claim), Number(b.dataset.v), b.dataset.step); });
@@ -772,7 +780,7 @@ async function viewOverview() {
   $app.querySelectorAll('[data-filter]').forEach((b) => { b.onclick = () => { S.ovFilter = b.dataset.filter; viewOverview(); }; });
   $app.querySelectorAll('[data-sort]').forEach((b) => { b.onclick = () => { S.ovSort = b.dataset.sort; viewOverview(); }; });
   $app.querySelectorAll('[data-href]').forEach((row) => {
-    row.onclick = (e) => { if (!e.target.closest('a, button')) location.hash = row.dataset.href; };
+    row.onclick = (e) => { if (!e.target.closest('a, button, select')) location.hash = row.dataset.href; };
   });
   const da = document.getElementById('done-all');
   if (da) da.onclick = () => { S.ovDoneAll = true; viewOverview(); };
@@ -929,6 +937,15 @@ function nextHint(p, step = p.step) {
 
 // ---------- 往前（退回）、往後（完成）：卡片和商品頁共用 ----------
 
+// 交給誰（選填）：那一步的職務排前面，其他人也可以選
+const NEXT_STEP = { cutout: 'listing', listing: 'optimizing', optimizing: 'mkt_check', mkt_check: 'done' };
+function assigneeOptions(step) {
+  const role = S.stepRole[step];
+  const ms = S.members.filter((m) => m.active).sort((a, b) => (b.roles.includes(role) ? 1 : 0) - (a.roles.includes(role) ? 1 : 0));
+  return `<option value="">不指定（誰看到誰接）</option>${ms.map((m) => `<option value="${m.id}">${esc(m.name)}${m.roles.length ? `（${esc(rolesText(m))}）` : ''}</option>`).join('')}`;
+}
+const assigneeSelect = (step, attrs) => (step && step !== 'done' ? `<select class="to-pick" ${attrs} title="交給誰">${assigneeOptions(step)}</select>` : '');
+
 const TARGET_TEXT = { cutout: '做圖（美編）', listing: '文案上架（上架人員）', optimizing: '優化（設計師）' };
 const returnTargets = (step) => FLOW.slice(0, Math.max(0, FLOW.indexOf(step)));
 
@@ -953,12 +970,15 @@ function openReturnModal(it) {
     <div class="field"><span>退回哪一步</span>
       <div class="hour-pick">${targets.map((t) => `<label class="${targets.length === 1 ? 'on' : ''}"><input type="radio" name="rt" value="${t}" ${targets.length === 1 ? 'checked' : ''}>${esc(TARGET_TEXT[t] || stepLabel(t))}</label>`).join('')}</div></div>
     <label class="rename-chk" hidden><input type="checkbox" id="rt-rename"> 商品名稱要改（網址會跟著變）</label>
+    <label class="field"><span>交給誰（選填）</span><select id="rt-to">${assigneeOptions(targets.length === 1 ? targets[0] : '')}</select></label>
     <label class="field"><span>哪裡有問題（選填）</span><textarea id="rt-note" placeholder="例：沒有佩戴示意、價格寫錯"></textarea></label>
     <div class="acts"><button class="btn" data-close>取消</button><button class="btn warn" id="rt-go" disabled>退回</button></div>`,
   (m, close) => {
     const target = () => m.querySelector('[name=rt]:checked')?.value;
+    let lastT = targets.length === 1 ? targets[0] : null;
     const sync = () => {
       m.querySelectorAll('.hour-pick label').forEach((l) => l.classList.toggle('on', l.querySelector('input').checked));
+      if (target() && target() !== lastT) { lastT = target(); m.querySelector('#rt-to').innerHTML = assigneeOptions(lastT); }
       const rc = m.querySelector('.rename-chk');
       rc.hidden = target() !== 'listing';
       if (rc.hidden) m.querySelector('#rt-rename').checked = false;
@@ -969,15 +989,15 @@ function openReturnModal(it) {
     sync();
     m.querySelector('#rt-go').onclick = async () => {
       const t = target();
-      const ok = await stepAction(it, 'return', { target: t, note: m.querySelector('#rt-note').value.trim(), rename: m.querySelector('#rt-rename').checked });
+      const ok = await stepAction(it, 'return', { target: t, note: m.querySelector('#rt-note').value.trim(), rename: m.querySelector('#rt-rename').checked, assignee: Number(m.querySelector('#rt-to').value) || null });
       if (ok) { close(); afterStep(`已退回「${stepLabel(t)}」`); }
     };
   });
 }
 
 // 完成：按一下就結束，直接交給下一步（網址、改了什麼都是選填，在商品頁才填）
-function openCompleteModal(it) {
-  stepAction(it, 'complete').then((ok) => ok && afterStep(it.step === 'mkt_check' ? '檢查通過，已完成' : '已完成，交給下一步'));
+function openCompleteModal(it, assignee = null) {
+  stepAction(it, 'complete', assignee ? { assignee } : {}).then((ok) => ok && afterStep(it.step === 'mkt_check' ? '檢查通過，已完成' : '已完成，交給下一步'));
 }
 
 
@@ -1036,7 +1056,7 @@ function actionPanel(p) {
   const foot = (btn, miss = '') => `<div class="flowbar">
       <div class="fb-back">${canReturn ? '<button class="btn danger act" data-open-return>← 退回</button>' : ''}</div>
       <div class="fb-cur"><b>${esc(stepLabel(step))}</b></div>
-      <div class="fb-next">${btn}</div>
+      <div class="fb-next">${assigneeSelect(p.return_to && p.return_to !== step ? p.return_to : NEXT_STEP[step], 'id="cp-to"')}${btn}</div>
     </div>
     <div class="missing fb-miss" id="miss">${esc(miss)}</div>`;
   const toTxt = esc(nextHint(p, step));
@@ -1284,6 +1304,8 @@ function bindProduct(p) {
     const optNote = document.getElementById('opt-note');
     done.onclick = () => {
       const extra = slUrl ? { sl_url: slUrl.value.trim() } : optNote ? { note: optNote.value.trim() } : {};
+      const to = Number(document.getElementById('cp-to')?.value) || null;
+      if (to) extra.assignee = to;
       doAction('complete', extra, cur.step === 'mkt_check' ? '檢查通過，已完成' : `已交給 ${nextHint(p, cur.step)}`);
     };
   }
