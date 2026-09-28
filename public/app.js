@@ -390,11 +390,11 @@ function simpleCard(it) {
       <div class="sc-sub">${stepChip(it.step)}${it.suggest ? '<span class="tag first">先做這件</span>' : ''}${it.rush ? `<span class="tag rush">插隊 ${esc(md)}</span>` : ''}${it.returned ? '<span class="tag return">被退回</span>' : ''}</div>
       ${it.returned?.note ? `<div class="ret-note">${esc(it.returned.note)}</div>` : ''}
     </div>
-    <div class="sc-acts">${it.claimable
-      ? `<button class="btn primary" data-claim="${it.product_id}" data-v="${it.version}" data-step="${it.step}">我來做</button>`
-      : it.holder_id === S.me.id
-        ? `${returnTargets(it.step).length ? `<button class="btn danger" data-back="${esc(it.key)}">← 退回</button>` : ''}<button class="btn primary" data-done="${esc(it.key)}">完成 →</button>`
-        : '<span class="sc-go">›</span>'}</div>
+    <div class="sc-acts">
+      ${returnTargets(it.step).length ? `<button class="btn danger" data-back="${esc(it.key)}">← 退回</button>` : ''}
+      ${it.claimable ? `<button class="btn" data-claim="${it.product_id}" data-v="${it.version}" data-step="${it.step}">我來做</button>` : ''}
+      <button class="btn primary" data-done="${esc(it.key)}">完成 →</button>
+    </div>
   </div>`;
 }
 
@@ -953,7 +953,7 @@ function openReturnModal(it) {
     <div class="field"><span>退回哪一步</span>
       <div class="hour-pick">${targets.map((t) => `<label class="${targets.length === 1 ? 'on' : ''}"><input type="radio" name="rt" value="${t}" ${targets.length === 1 ? 'checked' : ''}>${esc(TARGET_TEXT[t] || stepLabel(t))}</label>`).join('')}</div></div>
     <label class="rename-chk" hidden><input type="checkbox" id="rt-rename"> 商品名稱要改（網址會跟著變）</label>
-    <label class="field"><span>哪裡有問題</span><textarea id="rt-note" placeholder="例：沒有佩戴示意、價格寫錯"></textarea></label>
+    <label class="field"><span>哪裡有問題（選填）</span><textarea id="rt-note" placeholder="例：沒有佩戴示意、價格寫錯"></textarea></label>
     <div class="acts"><button class="btn" data-close>取消</button><button class="btn warn" id="rt-go" disabled>退回</button></div>`,
   (m, close) => {
     const target = () => m.querySelector('[name=rt]:checked')?.value;
@@ -962,7 +962,7 @@ function openReturnModal(it) {
       const rc = m.querySelector('.rename-chk');
       rc.hidden = target() !== 'listing';
       if (rc.hidden) m.querySelector('#rt-rename').checked = false;
-      m.querySelector('#rt-go').disabled = !(target() && m.querySelector('#rt-note').value.trim());
+      m.querySelector('#rt-go').disabled = !target();
     };
     m.addEventListener('input', sync);
     m.addEventListener('change', sync);
@@ -975,37 +975,8 @@ function openReturnModal(it) {
   });
 }
 
-// 完成：上架要網址、優化要寫改了什麼，其他直接完成
+// 完成：按一下就結束，直接交給下一步（網址、改了什麼都是選填，在商品頁才填）
 function openCompleteModal(it) {
-  if (it.step === 'listing' || it.step === 'optimizing') {
-    const isList = it.step === 'listing';
-    const url = it.rename_pending ? '' : (it.sl_url || it.link || '');
-    openModal(`
-      <h3>完成 →</h3>
-      <p class="muted">${esc(it.name)}</p>
-      ${isList ? `${it.rename_pending ? '<div class="warnbox">名稱改過了，請貼<b>新網址</b>。</div>' : ''}
-        <label class="field"><span>商品網址</span><input type="url" id="cp-val" value="${esc(url)}" placeholder="https://"></label>`
-      : '<label class="field"><span>改了什麼</span><textarea id="cp-val" placeholder="例：換主圖、補尺寸表"></textarea></label>'}
-      <div class="acts"><button class="btn" data-close>取消</button><button class="btn primary" id="cp-go">完成</button></div>`,
-    (m, close) => {
-      const input = m.querySelector('#cp-val');
-      const valid = () => {
-        const v = input.value.trim();
-        if (!isList) return !!v;
-        const same = it.rename_pending && v.replace(/[?#].*$/, '').replace(/\/+$/, '') === String(it.link).replace(/[?#].*$/, '').replace(/\/+$/, '');
-        return /^https?:\/\//.test(v) && !same;
-      };
-      const sync = () => { m.querySelector('#cp-go').disabled = !valid(); };
-      input.oninput = sync;
-      sync();
-      m.querySelector('#cp-go').onclick = async () => {
-        const ok = await stepAction(it, 'complete', isList ? { sl_url: input.value.trim() } : { note: input.value.trim() });
-        if (ok) { close(); afterStep('已完成，交給下一步'); }
-      };
-    });
-    return;
-  }
-  if (!confirm(`${it.name}\n確定「${stepLabel(it.step)}」完成了？`)) return;
   stepAction(it, 'complete').then((ok) => ok && afterStep(it.step === 'mkt_check' ? '檢查通過，已完成' : '已完成，交給下一步'));
 }
 
@@ -1035,15 +1006,17 @@ function actionPanel(p) {
     <div class="returned"><b>${esc(member(open.returned.by_id)?.name ?? '')} 退回</b>
       <div class="note">${esc(open.returned.note)}</div></div>` : '';
   const role = open.role;
-  if (!open.member_id) {
-    const can = hasRole(role);
+  // 不鎖人：同職務的人（或管理員）都直接看到工作卡片，可以完成或退回
+  const canDo = true; // 先不設限制
+  if (!open.member_id && !canDo) {
+    const can = false;
     return `<div class="card action ${can ? 'mine' : 'locked'}">${returned}
       <h2>${esc(stepLabel(step))}</h2>
       ${can ? '<button class="btn primary act big-btn" id="claim-btn">我來做</button>' : `<div class="sub">${waitText(step)}</div>`}
       ${others}
     </div>`;
   }
-  if (open.member_id !== S.me.id) {
+  if (open.member_id !== S.me.id && !canDo) {
     const holder = member(open.member_id);
     return `<div class="card action locked">${returned}
       <h2>${esc(stepLabel(step))}</h2>
@@ -1051,8 +1024,11 @@ function actionPanel(p) {
       ${others}
     </div>`;
   }
+  const heldByOther = open.member_id && open.member_id !== S.me.id;
   const head = (title) => `<div class="row" style="align-items:center"><h2 style="flex:1;margin:0">${title}</h2>
-    <button class="linkbtn" id="release-btn" title="不做了，放回給其他${esc(roleName(role))}">放回</button></div>${others}`;
+    ${!open.member_id ? '<button class="btn small" id="claim-btn">我來做</button>'
+      : heldByOther ? `<span class="muted">${esc(member(open.member_id)?.name ?? '')} 在做</span>`
+      : `<button class="linkbtn" id="release-btn" title="不做了，放回給其他${esc(roleName(role))}">放回</button>`}</div>${others}`;
   // 提示平常收起來，點「看提示」才展開
   const hint = (html) => `<details class="hint"><summary>看提示</summary>${html}</details>`;
   const canReturn = returnTargets(step).length > 0;
@@ -1089,14 +1065,14 @@ function actionPanel(p) {
           <ol class="sop-list">${COPY_SOP.map((t) => `<li>${esc(t)}</li>`).join('')}</ol>
         </div>`)}
         <div class="row" style="margin:10px 0">${shop}</div>
-        <label class="field" style="margin-top:6px"><span>商品網址</span><input type="url" id="sl-url" value="${esc(url)}" placeholder="https://"></label>
-        ${foot(`<button class="btn primary act" id="complete-btn">完成上架 → ${toTxt}</button>`)}</div>`;
+        <label class="field" style="margin-top:6px"><span>商品網址（選填，有改才填）</span><input type="url" id="sl-url" value="${esc(url)}" placeholder="https://"></label>
+        ${foot(`<button class="btn primary act" id="complete-btn">完成 → ${toTxt}</button>`)}</div>`;
     }
     case 'optimizing': {
       return `<div class="card action mine">${returned}${head('優化')}
         <div class="row" style="margin:10px 0">${shop}</div>
-        <label class="field" style="margin-top:6px"><span>改了什麼</span><textarea id="opt-note" placeholder="例：換主圖、補尺寸表、調整比例"></textarea></label>
-        ${foot(`<button class="btn primary act" id="complete-btn" disabled>完成優化 → ${toTxt}</button>`, '請填寫改了什麼')}</div>`;
+        <label class="field" style="margin-top:6px"><span>改了什麼（選填）</span><textarea id="opt-note" placeholder="例：換主圖、補尺寸表、調整比例"></textarea></label>
+        ${foot(`<button class="btn primary act" id="complete-btn">完成 → ${toTxt}</button>`)}</div>`;
     }
     case 'mkt_check': {
       const lastOpt = [...p.stints].reverse().find((s) => s.step === 'optimizing' && s.end_note);
@@ -1113,7 +1089,7 @@ function actionPanel(p) {
 function rushBlock(p) {
   if (p.step === 'done' && !p.rush) return '';
   const r = p.rush;
-  const can = isMkt() && p.step !== 'done' && !p.delisted_at;
+  const can = p.step !== 'done' && !p.delisted_at;
   if (!r && !can) return '';
   return `<div class="card section rush-box ${r?.urgent || r?.overdue ? 'hot' : ''}">
     <h2>插隊 ${r ? `<span class="tag ${r.overdue ? 'red' : r.urgent ? 'rush' : 'rush-soft'}">${r.overdue ? '已逾期' : r.urgent ? '急件' : '插隊中'}</span>` : ''}</h2>
@@ -1233,7 +1209,7 @@ async function viewProduct(idStr) {
       <div class="page-head"><a href="#/radar" class="btn small">← 今天要做</a></div>
       <div class="staff-title">${thumb(p.id, p.thumb_ver, 'md')}<h1>${esc(p.name)}</h1></div>
       <div id="action">${actionPanel(p)}</div>
-      ${isMkt() ? rushBlock(p) : ''}</div>`;
+      ${rushBlock(p)}</div>`;
     return bindProduct(p);
   }
   $app.innerHTML = `
@@ -1301,29 +1277,17 @@ function bindProduct(p) {
     b.onclick = () => confirm('刪除這張照片？') && act(() => api('DELETE', `/api/photos/${b.dataset.delPhoto}`), '已刪除');
   });
 
-  // 完成這一步
+  // 完成這一步：永遠可以按；網址、改了什麼有填才送
   const done = document.getElementById('complete-btn');
   if (done) {
-    const miss = document.getElementById('miss');
     const slUrl = document.getElementById('sl-url');
     const optNote = document.getElementById('opt-note');
-    if (slUrl) {
-      const sameAsOld = (v) => p.rename_pending && v.replace(/[?#].*$/, '').replace(/\/+$/, '') === String(p.link).replace(/[?#].*$/, '').replace(/\/+$/, '');
-      const sync = () => {
-        const v = slUrl.value.trim();
-        const ok = /^https?:\/\//.test(v) && !sameAsOld(v);
-        done.disabled = !ok;
-        miss.textContent = ok ? '' : sameAsOld(v) ? '這是舊網址，請貼改名後的新網址' : '請貼上 Shopline 商品網址';
-      };
-      slUrl.oninput = sync;
-      sync();
-    }
-    if (optNote) optNote.oninput = () => { done.disabled = !optNote.value.trim(); miss.textContent = optNote.value.trim() ? '' : '請填寫改了什麼'; };
     done.onclick = () => {
       const extra = slUrl ? { sl_url: slUrl.value.trim() } : optNote ? { note: optNote.value.trim() } : {};
       doAction('complete', extra, cur.step === 'mkt_check' ? '檢查通過，已完成' : `已交給 ${nextHint(p, cur.step)}`);
     };
   }
+
 
   // 退回
   const rb2 = $app.querySelector('[data-open-return]');

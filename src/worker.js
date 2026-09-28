@@ -626,10 +626,8 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params }) =>
   const mustBeCurrent = () => {
     if (open.step !== p.step) throw new HttpError(409, '這件商品已不在這一步，畫面已更新');
   };
-  const mustHold = () => {
-    need();
-    if (open.member_id !== me.id) throw new HttpError(403, open.member_id ? '只有認領的人可以操作' : '請先按「我來做」認領');
-  };
+  // 先不設限制：任何人都可以操作任何一步（之後有人用錯再收）
+  const mustHold = () => need();
   const photoCount = async (kind) => (await db.prepare('SELECT COUNT(*) AS n FROM photos WHERE product_id = ? AND kind = ? AND deleted_at IS NULL').bind(id, kind).first()).n;
   const forward = async (endReason, extra = {}) => {
     const from = open ? open.step : p.step;
@@ -659,7 +657,6 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params }) =>
         const who = await db.prepare('SELECT name FROM members WHERE id = ?').bind(open.member_id).first();
         throw new HttpError(409, `已被 ${who?.name ?? '別人'} 認領，畫面已更新`);
       }
-      if (!hasRole(me, open.role)) throw new HttpError(403, `需要「${ROLES[open.role]}」身分才能認領`);
       const updates = open.step === 'open' || open.step === 'mkt_check' ? { marketer_id: me.id } : {};
       stmts = handOver(db, p, open, me, { member: me.id, reason: 'claim', updates, action: 'claim', detail: STEP_LABEL[open.step] });
       break;
@@ -674,12 +671,13 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params }) =>
       if (open.step === 'open' && !(await photoCount('pick'))) throw new HttpError(400, '請至少上傳 1 張選品照片');
       // 做圖、優化的成品直接上傳到 Shopline，系統裡不用上傳
       if (open.step === 'listing') {
-        const slUrl = String(b.sl_url ?? '').trim().slice(0, 500);
-        if (!/^https?:\/\//.test(slUrl)) throw new HttpError(400, '請貼上 Shopline 商品網址（http 開頭）');
-        const updates = { sl_url: slUrl };
+        // 網址選填：沒填就沿用原本的
+        const typed = String(b.sl_url ?? '').trim().slice(0, 500);
+        if (typed && !/^https?:\/\//.test(typed)) throw new HttpError(400, '網址要以 http 開頭');
+        const slUrl = typed || p.sl_url || p.link || '';
+        const updates = { sl_url: slUrl, rename_pending: 0 };
         const extra = [];
-        const changed = normalizeLink(slUrl) !== normalizeLink(p.link);
-        if (p.rename_pending && !changed) throw new HttpError(400, '名稱改了網址也會變，請貼上改名後的新網址');
+        const changed = !!typed && normalizeLink(slUrl) !== normalizeLink(p.link);
         if (changed) {
           // 網址變了（多半是改了名稱）：以系統為主，改用新網址；舊網址記下來，Excel 還沒改時同步照樣對得上這一件
           Object.assign(updates, { link: slUrl, rename_pending: 0, thumb_checked_at: null });
@@ -703,9 +701,8 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params }) =>
         break;
       }
       if (open.step === 'optimizing') {
-        const note = String(b.note ?? '').trim().slice(0, 2000);
-        if (!note) throw new HttpError(400, '請填寫改了什麼');
-        stmts = await forward('complete', { endNote: note, detail: note.slice(0, 60) });
+        const note = String(b.note ?? '').trim().slice(0, 2000); // 選填
+        stmts = await forward('complete', { endNote: note || null, detail: note.slice(0, 60) });
         break;
       }
       stmts = await forward(open.step === 'mkt_check' ? 'pass' : 'complete', { action: open.step === 'mkt_check' ? 'check_pass' : 'complete' });
@@ -714,17 +711,16 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params }) =>
     case 'return': {
       // 退回前面任何一步；管理員可以直接退回任何一件，其他人要是認領這一步的人
       const byAdmin = me.is_admin && (!open || open.member_id !== me.id);
-      if (byAdmin) { need(); mustBeCurrent(); } else mustHold();
+      need();
       const from = open.step;
-      const note = String(b.note ?? '').trim().slice(0, 2000);
-      if (!note) throw new HttpError(400, '請寫出哪裡有問題');
+      const note = String(b.note ?? '').trim().slice(0, 2000); // 選填
       const before = FLOW.slice(0, Math.max(0, FLOW.indexOf(from)));
       const to = before.includes(b.target) ? b.target : null;
       if (!to) throw new HttpError(400, before.length ? '請選要退回哪一步' : '這一步前面沒有可以退回的步驟');
       const updates = {};
       if (to === 'listing' && b.rename) updates.rename_pending = 1;
       const label = byAdmin ? '管理員退回' : to === 'listing' ? (b.rename ? '文案・名稱要改' : '文案') : to === 'cutout' ? '圖' : STEP_LABEL[to];
-      const text = `【${label}】${note}`;
+      const text = note ? `【${label}】${note}` : `【${label}】`;
       const t = now();
       const running = await openStint(db, id, to);
       // 退回的那一步本來就還在做（例如圖還沒做完）：不算退件，把話帶給正在做的人
@@ -777,7 +773,6 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params }) =>
 // 插隊：只選日期，不能選當天
 route('PUT', '/api/products/:id/rush', async ({ db, request, me, params, settings }) => {
   requireMe(me);
-  if (!isMkt(me)) throw new HttpError(403, '只有行銷或管理員可以設定插隊');
   const id = intId(params.id);
   const p = await getProduct(db, id);
   const date = (await body(request)).date || null;
