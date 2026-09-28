@@ -390,7 +390,11 @@ function simpleCard(it) {
       <div class="sc-sub">${stepChip(it.step)}${it.suggest ? '<span class="tag first">先做這件</span>' : ''}${it.rush ? `<span class="tag rush">插隊 ${esc(md)}</span>` : ''}${it.returned ? '<span class="tag return">被退回</span>' : ''}</div>
       ${it.returned?.note ? `<div class="ret-note">${esc(it.returned.note)}</div>` : ''}
     </div>
-    ${it.claimable ? `<button class="btn primary" data-claim="${it.product_id}" data-v="${it.version}" data-step="${it.step}">我來做</button>` : '<span class="sc-go">›</span>'}
+    <div class="sc-acts">${it.claimable
+      ? `<button class="btn primary" data-claim="${it.product_id}" data-v="${it.version}" data-step="${it.step}">我來做</button>`
+      : it.holder_id === S.me.id
+        ? `${returnTargets(it.step).length ? `<button class="btn danger" data-back="${esc(it.key)}">← 退回</button>` : ''}<button class="btn primary" data-done="${esc(it.key)}">完成 →</button>`
+        : '<span class="sc-go">›</span>'}</div>
   </div>`;
 }
 
@@ -410,6 +414,9 @@ async function viewStaffRadar() {
     c.onclick = (e) => { if (!e.target.closest('a, button')) location.hash = c.dataset.href; };
   });
   $app.querySelectorAll('[data-claim]').forEach((b) => { b.onclick = () => claim(Number(b.dataset.claim), Number(b.dataset.v), b.dataset.step); });
+  const byKey = new Map(r.items.map((i) => [i.key, i]));
+  $app.querySelectorAll('[data-back]').forEach((b) => { b.onclick = () => openReturnModal(byKey.get(b.dataset.back)); });
+  $app.querySelectorAll('[data-done]').forEach((b) => { b.onclick = () => openCompleteModal(byKey.get(b.dataset.done)); });
   if (S.radarScroll) { window.scrollTo(0, S.radarScroll); S.radarScroll = 0; }
 }
 
@@ -920,22 +927,88 @@ function nextHint(p, step = p.step) {
   return `${stepLabel(next)}`;
 }
 
-function returnForm(p) {
-  const isCheck = p.step === 'mkt_check';
-  const isOpt = p.step === 'optimizing';
-  const targets = ['cutout', 'listing', 'optimizing'];
-  const prev = { listing: 'cutout' }[p.step];
-  return `<div class="return-box" data-return-form hidden>
-    ${isCheck ? `<div class="field"><span>退回哪一步（改好後直接交回你）</span>
-      <div class="hour-pick" id="ret-target">${targets.map((t) => `<label><input type="radio" name="target" value="${t}">${esc(stepLabel(t))}</label>`).join('')}</div></div>`
-    : isOpt ? `<div class="field"><span>哪裡有問題（改好後直接交回你）</span>
-      <div class="hour-pick" id="ret-target"><label><input type="radio" name="target" value="listing">文案 → 上架人員</label><label><input type="radio" name="target" value="cutout">圖 → 美編</label></div></div>
-      <label class="rename-chk" hidden><input type="checkbox" name="rename"> 商品名稱要改（Shopline 網址會跟著變，上架人員要去試算表換新網址）</label>`
-    : `<p class="muted" style="margin-top:0">會退回「${esc(stepLabel(prev))}」，記一次退件在上一步的人身上。</p>`}
-    <label class="field"><span>哪裡有問題（必填）</span><textarea data-return-note placeholder="例：去背邊緣有白邊、主圖比例不對"></textarea></label>
-    <div class="row"><span class="missing" data-ret-miss></span><span class="spacer"></span><button class="btn warn act" data-return disabled>送出退回</button></div>
-  </div>`;
+// ---------- 往前（退回）、往後（完成）：卡片和商品頁共用 ----------
+
+const TARGET_TEXT = { cutout: '做圖（美編）', listing: '文案上架（上架人員）', optimizing: '優化（設計師）' };
+const returnTargets = (step) => FLOW.slice(0, Math.max(0, FLOW.indexOf(step)));
+
+// 做完動作後：在商品頁就回到今天要做，在清單就重新整理
+function afterStep(msg) {
+  toast(msg);
+  if (currentRoute()[0] === 'p') location.hash = '#/radar';
+  else refresh().catch(() => {});
 }
+
+function stepAction(it, action, extra) {
+  return act(() => api('POST', `/api/products/${it.product_id}/action`, { action, version: it.version, step: it.step, ...extra }), null, 'none');
+}
+
+// 退回：選前面任何一步，寫原因；改好會直接回到你這一步
+function openReturnModal(it) {
+  const targets = returnTargets(it.step);
+  if (!targets.length) return toast('這一步前面沒有可以退回的步驟', true);
+  openModal(`
+    <h3>← 退回</h3>
+    <p class="muted">${esc(it.name)}：改好後會直接回到你這裡。</p>
+    <div class="field"><span>退回哪一步</span>
+      <div class="hour-pick">${targets.map((t) => `<label class="${targets.length === 1 ? 'on' : ''}"><input type="radio" name="rt" value="${t}" ${targets.length === 1 ? 'checked' : ''}>${esc(TARGET_TEXT[t] || stepLabel(t))}</label>`).join('')}</div></div>
+    <label class="rename-chk" hidden><input type="checkbox" id="rt-rename"> 商品名稱要改（網址會跟著變）</label>
+    <label class="field"><span>哪裡有問題</span><textarea id="rt-note" placeholder="例：沒有佩戴示意、價格寫錯"></textarea></label>
+    <div class="acts"><button class="btn" data-close>取消</button><button class="btn warn" id="rt-go" disabled>退回</button></div>`,
+  (m, close) => {
+    const target = () => m.querySelector('[name=rt]:checked')?.value;
+    const sync = () => {
+      m.querySelectorAll('.hour-pick label').forEach((l) => l.classList.toggle('on', l.querySelector('input').checked));
+      const rc = m.querySelector('.rename-chk');
+      rc.hidden = target() !== 'listing';
+      if (rc.hidden) m.querySelector('#rt-rename').checked = false;
+      m.querySelector('#rt-go').disabled = !(target() && m.querySelector('#rt-note').value.trim());
+    };
+    m.addEventListener('input', sync);
+    m.addEventListener('change', sync);
+    sync();
+    m.querySelector('#rt-go').onclick = async () => {
+      const t = target();
+      const ok = await stepAction(it, 'return', { target: t, note: m.querySelector('#rt-note').value.trim(), rename: m.querySelector('#rt-rename').checked });
+      if (ok) { close(); afterStep(`已退回「${stepLabel(t)}」`); }
+    };
+  });
+}
+
+// 完成：上架要網址、優化要寫改了什麼，其他直接完成
+function openCompleteModal(it) {
+  if (it.step === 'listing' || it.step === 'optimizing') {
+    const isList = it.step === 'listing';
+    const url = it.rename_pending ? '' : (it.sl_url || it.link || '');
+    openModal(`
+      <h3>完成 →</h3>
+      <p class="muted">${esc(it.name)}</p>
+      ${isList ? `${it.rename_pending ? '<div class="warnbox">名稱改過了，請貼<b>新網址</b>。</div>' : ''}
+        <label class="field"><span>商品網址</span><input type="url" id="cp-val" value="${esc(url)}" placeholder="https://"></label>`
+      : '<label class="field"><span>改了什麼</span><textarea id="cp-val" placeholder="例：換主圖、補尺寸表"></textarea></label>'}
+      <div class="acts"><button class="btn" data-close>取消</button><button class="btn primary" id="cp-go">完成</button></div>`,
+    (m, close) => {
+      const input = m.querySelector('#cp-val');
+      const valid = () => {
+        const v = input.value.trim();
+        if (!isList) return !!v;
+        const same = it.rename_pending && v.replace(/[?#].*$/, '').replace(/\/+$/, '') === String(it.link).replace(/[?#].*$/, '').replace(/\/+$/, '');
+        return /^https?:\/\//.test(v) && !same;
+      };
+      const sync = () => { m.querySelector('#cp-go').disabled = !valid(); };
+      input.oninput = sync;
+      sync();
+      m.querySelector('#cp-go').onclick = async () => {
+        const ok = await stepAction(it, 'complete', isList ? { sl_url: input.value.trim() } : { note: input.value.trim() });
+        if (ok) { close(); afterStep('已完成，交給下一步'); }
+      };
+    });
+    return;
+  }
+  if (!confirm(`${it.name}\n確定「${stepLabel(it.step)}」完成了？`)) return;
+  stepAction(it, 'complete').then((ok) => ok && afterStep(it.step === 'mkt_check' ? '檢查通過，已完成' : '已完成，交給下一步'));
+}
+
 
 // 這件商品我要操作的是哪一段：我手上的 > 我能認領的 > 商品目前所在的那一段（做圖、文案可能同時進行）
 function chosenStint(p) {
@@ -978,20 +1051,18 @@ function actionPanel(p) {
       ${others}
     </div>`;
   }
-  const imgPending = step === 'listing' && (p.opens || []).some((o) => o.step === 'cutout');
   const head = (title) => `<div class="row" style="align-items:center"><h2 style="flex:1;margin:0">${title}</h2>
     <button class="linkbtn" id="release-btn" title="不做了，放回給其他${esc(roleName(role))}">放回</button></div>${others}`;
   // 提示平常收起來，點「看提示」才展開
   const hint = (html) => `<details class="hint"><summary>看提示</summary>${html}</details>`;
-  const canReturn = step !== 'cutout' && open.step === p.step && !imgPending;
-  const backTo = { listing: '美編（圖）', optimizing: '文案或圖', mkt_check: '任一步' }[step] || '';
+  const canReturn = returnTargets(step).length > 0;
   // 中間是自己這一步：往左退回上一步，往右完成交給下一步（行銷檢查往右就是完成）
   const foot = (btn, miss = '') => `<div class="flowbar">
-      <div class="fb-back">${canReturn ? `<button class="btn danger act" data-open-return>← 退回${esc(backTo)}</button>` : ''}</div>
+      <div class="fb-back">${canReturn ? '<button class="btn danger act" data-open-return>← 退回</button>' : ''}</div>
       <div class="fb-cur"><b>${esc(stepLabel(step))}</b></div>
       <div class="fb-next">${btn}</div>
     </div>
-    <div class="missing fb-miss" id="miss">${esc(miss)}</div>${canReturn ? returnForm(p) : ''}`;
+    <div class="missing fb-miss" id="miss">${esc(miss)}</div>`;
   const toTxt = esc(nextHint(p, step));
   switch (step) {
     case 'cutout': {
@@ -1255,31 +1326,8 @@ function bindProduct(p) {
   }
 
   // 退回
-  const rf = $app.querySelector('[data-return-form]');
-  if (rf) {
-    $app.querySelector('[data-open-return]').onclick = () => { rf.hidden = !rf.hidden; if (!rf.hidden) rf.querySelector('textarea').focus(); };
-    const note = rf.querySelector('[data-return-note]');
-    const send = rf.querySelector('[data-return]');
-    const target = () => rf.querySelector('[name=target]:checked')?.value;
-    const sync = () => {
-      rf.querySelectorAll('.hour-pick label').forEach((l) => l.classList.toggle('on', l.querySelector('input').checked));
-      const miss = [];
-      if (['mkt_check', 'optimizing'].includes(p.step) && !target()) miss.push(p.step === 'optimizing' ? '文案或圖' : '退回哪一步');
-      const rc = rf.querySelector('.rename-chk');
-      if (rc) { rc.hidden = target() !== 'listing'; if (rc.hidden) rc.querySelector('input').checked = false; }
-      if (!note.value.trim()) miss.push('哪裡有問題');
-      send.disabled = miss.length > 0;
-      rf.querySelector('[data-ret-miss]').textContent = miss.length ? `還缺：${miss.join('、')}` : '';
-    };
-    rf.addEventListener('input', sync);
-    rf.addEventListener('change', sync);
-    sync();
-    send.onclick = () => {
-      const t = ['mkt_check', 'optimizing'].includes(p.step) ? target() : { cutout: 'open', listing: 'cutout' }[p.step];
-      const rename = !!rf.querySelector('[name=rename]:checked');
-      doAction('return', { note: note.value.trim(), target: t, rename }, `已退回「${stepLabel(t)}」${rename ? '，上架人員會換新網址' : ''}`);
-    };
-  }
+  const rb2 = $app.querySelector('[data-open-return]');
+  if (rb2 && cur) rb2.onclick = () => openReturnModal({ product_id: id, version: p.version, step: cur.step, name: p.name });
 
   // 插隊
   const rs = document.getElementById('rush-set');

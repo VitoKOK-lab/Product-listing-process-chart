@@ -712,56 +712,42 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params }) =>
       break;
     }
     case 'return': {
-      // 管理員可以直接退回任何一件；其他人要是認領這一步的人
+      // 退回前面任何一步；管理員可以直接退回任何一件，其他人要是認領這一步的人
       const byAdmin = me.is_admin && (!open || open.member_id !== me.id);
-      if (byAdmin) need(); else mustHold();
-      mustBeCurrent();
+      if (byAdmin) { need(); mustBeCurrent(); } else mustHold();
+      const from = open.step;
       const note = String(b.note ?? '').trim().slice(0, 2000);
       if (!note) throw new HttpError(400, '請寫出哪裡有問題');
-      let to;
-      let label = '';
+      const before = FLOW.slice(0, Math.max(0, FLOW.indexOf(from)));
+      const to = before.includes(b.target) ? b.target : null;
+      if (!to) throw new HttpError(400, before.length ? '請選要退回哪一步' : '這一步前面沒有可以退回的步驟');
       const updates = {};
-      if (byAdmin) {
-        const before = FLOW.slice(0, Math.max(0, FLOW.indexOf(p.step)));
-        to = before.includes(b.target) ? b.target : null;
-        if (!to) throw new HttpError(400, '請選要退回哪一步');
-        label = '管理員退回';
-      } else if (p.step === 'mkt_check') {
-        to = ['open', 'cutout', 'listing', 'optimizing'].includes(b.target) ? b.target : null;
-        if (!to || to === 'open') throw new HttpError(400, '請選要退回哪一步');
-      } else if (p.step === 'optimizing') {
-        // 設計師：文案 → 上架人員；圖 → 美編。改好直接交回設計師
-        to = { listing: 'listing', cutout: 'cutout' }[b.target];
-        if (!to) throw new HttpError(400, '請選退回原因：文案或圖');
-        label = to === 'listing' ? (b.rename ? '文案・名稱要改' : '文案') : '圖';
-        if (to === 'listing' && b.rename) updates.rename_pending = 1;
-      } else {
-        to = PREV[p.step];
-        if (!to) throw new HttpError(400, '開單沒有上一步可以退回');
-      }
-      const text = label ? `【${label}】${note}` : note;
+      if (to === 'listing' && b.rename) updates.rename_pending = 1;
+      const label = byAdmin ? '管理員退回' : to === 'listing' ? (b.rename ? '文案・名稱要改' : '文案') : to === 'cutout' ? '圖' : STEP_LABEL[to];
+      const text = `【${label}】${note}`;
+      const t = now();
       const running = await openStint(db, id, to);
-      if (running) {
-        // 那一步本來就還在做（例如圖還沒做完就先上架）：不算退件，把話帶給正在做的人，做完直接交回
-        const t = now();
-        stmts = [
-          ...transition(db, p, open, me, {
-            endReason: 'return', to, skipStint: true, updates: { ...updates, return_to: p.step },
-            action: 'return', detail: `${STEP_LABEL[p.step]} → ${STEP_LABEL[to]}（還在做）：${note.slice(0, 60)}`,
-          }),
-          db.prepare("UPDATE stints SET ended_at = ?, end_reason = 'nudge' WHERE id = ?").bind(t, running.id),
-          db.prepare(`INSERT INTO stints (product_id, step, member_id, role, started_at, start_reason, note, by_id) VALUES (?, ?, ?, ?, ?, 'nudge', ?, ?)`)
-            .bind(id, to, running.member_id, running.role, t, text, me.id),
-        ];
+      // 退回的那一步本來就還在做（例如圖還沒做完）：不算退件，把話帶給正在做的人
+      const nudge = running ? [
+        db.prepare("UPDATE stints SET ended_at = ?, end_reason = 'nudge' WHERE id = ?").bind(t, running.id),
+        db.prepare(`INSERT INTO stints (product_id, step, member_id, role, started_at, start_reason, note, by_id) VALUES (?, ?, ?, ?, ?, 'nudge', ?, ?)`)
+          .bind(id, to, running.member_id, running.role, t, text, me.id),
+      ] : [];
+      if (running && from !== p.step) {
+        // 同時進行中的那一段（例如文案還沒完成時催圖）：自己這一段照常繼續
+        stmts = [...nudge, log(db, me.id, 'return', id, `${STEP_LABEL[from]} → ${STEP_LABEL[to]}（還在做）：${note.slice(0, 60)}`)];
         break;
       }
-      const member = await holderFor(db, p, to);
-      stmts = transition(db, p, open, me, {
-        endReason: 'return', to, member, startReason: 'return', note: text,
-        // 行銷檢查、設計師退回：改好直接交回；中間關卡退回：照正常流程往下走
-        updates: { ...updates, return_to: ['mkt_check', 'optimizing'].includes(p.step) || byAdmin ? p.step : null },
-        action: 'return', detail: `${STEP_LABEL[p.step]} → ${STEP_LABEL[to]}：${label ? `【${label}】` : ''}${note.slice(0, 60)}`,
-      });
+      const member = running ? null : await holderFor(db, p, to);
+      stmts = [
+        ...transition(db, p, open, me, {
+          endReason: 'return', to, member, skipStint: !!running, startReason: 'return', note: text,
+          // 改好後直接交回退回的人這一步
+          updates: { ...updates, return_to: from },
+          action: 'return', detail: `${STEP_LABEL[from]} → ${STEP_LABEL[to]}${running ? '（還在做）' : ''}：【${label}】${note.slice(0, 60)}`,
+        }),
+        ...nudge,
+      ];
       break;
     }
     case 'admin_advance': {

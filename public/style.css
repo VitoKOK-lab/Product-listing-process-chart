@@ -1095,3 +1095,10 @@ details.hint .guide ul { margin: 0; padding-left: 18px; line-height: 1.8; }
   .scard .btn { padding: 0 16px; }
   .staff-page .action { padding: 14px; }
 }
+.sc-acts { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+@media (max-width: 760px) {
+  .scard { grid-template-columns: 48px 1fr; }
+  .scard .sc-acts { grid-column: 1 / -1; justify-content: stretch; }
+  .scard .sc-acts .btn { flex: 1; }
+  .scard .sc-go { display: none; }
+}
