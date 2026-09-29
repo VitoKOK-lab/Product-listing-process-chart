@@ -4,10 +4,10 @@ import { STATUS_RANK } from './sheet.js';
 
 // 流程：行銷在試算表寫上商品名稱（= 開單）→ 美編做圖、上架人員寫文案（同時進行）→ 上架 → 優化 → 行銷檢查 → 已完成
 // open 只留給舊資料；新商品從 cutout + listing 同時開始
-export const STEPS = ['open', 'cutout', 'listing', 'optimizing', 'mkt_check', 'done'];
-export const FLOW = ['cutout', 'listing', 'optimizing', 'mkt_check'];
-export const STEP_LABEL = { open: '開單', cutout: '做圖', listing: '文案上架', optimizing: '優化', mkt_check: '行銷檢查', done: '已完成' };
-export const STEP_ROLE = { open: 'marketing', cutout: 'editor', listing: 'lister', optimizing: 'designer', mkt_check: 'marketing' };
+export const STEPS = ['open', 'cutout', 'listing', 'review', 'optimizing', 'mkt_check', 'done'];
+export const FLOW = ['cutout', 'listing', 'review', 'optimizing', 'mkt_check'];
+export const STEP_LABEL = { open: '開單', cutout: '做圖', listing: '文案上架', review: '審核', optimizing: '優化', mkt_check: '最後審核', done: '已完成' };
+export const STEP_ROLE = { open: 'marketing', cutout: 'editor', listing: 'lister', review: 'marketing', optimizing: 'designer', mkt_check: 'marketing' };
 export const MIN_SAMPLE = 3; // 同一步至少 3 件走完，才拿來比團隊平均
 
 // 這些開始原因代表「又輪到這一步一次」；認領、放回、改派、恢復只是同一輪換手
@@ -165,7 +165,7 @@ export function overviewRows({ products, allProducts, stints, now, cfg, settings
       const cell = {
         step, state, held, work, pool: round1(e?.pool || 0), rounds: e?.rounds || 0, holders: e?.holders || [],
         avg: avgs[step].avg, total_avg: avgs[step].total_avg, diff: null, level: 'ok', holder_id: null, waiting: false,
-        parallel: !!open && step !== p.step, owner: step === 'mkt_check' ? p.marketer_id ?? null : null,
+        parallel: !!open && step !== p.step, owner: step === 'mkt_check' || step === 'review' ? p.marketer_id ?? null : null,
       };
       if (open) {
         cell.holder_id = open.member_id ?? null;
@@ -228,8 +228,8 @@ export function buildRadar({ products, allProducts, stints, mentions, me, meRole
       tags.push({ t: `比平均慢 ${c.diff}h`, k: c.level === 'very' ? 'red' : 'yellow' });
       if (group === 'mine') group = 'slow';
     }
-    if (!s.member_id) tags.push({ t: s.step === 'mkt_check' ? '待審' : '等人認領', k: 'wait' });
-    if (s.step === 'optimizing' && openCut.has(p.id)) tags.push({ t: '圖還在做', k: 'wait' });
+    if (!s.member_id) tags.push({ t: s.step === 'mkt_check' || s.step === 'review' ? '待審' : '等人認領', k: 'wait' });
+    if ((s.step === 'optimizing' || s.step === 'review') && openCut.has(p.id)) tags.push({ t: '圖還在做', k: 'wait' });
     if (s.step === 'listing' && p.rename_pending) tags.push({ t: '名稱要改・網址會變', k: 'return' });
     items.set(`${s.product_id}:${s.id}`, {
       key: `${s.product_id}:${s.id}`, product_id: p.id, name: p.name, link: p.link || '', step: s.step, role: s.role,

@@ -4,10 +4,10 @@
 
 const POLL_MS = 10000;
 const MAX_EDGE = 1920;
-const STEP_ORDER = ['cutout', 'listing', 'optimizing', 'mkt_check', 'done'];
-const FLOW = ['cutout', 'listing', 'optimizing', 'mkt_check'];
+const STEP_ORDER = ['cutout', 'listing', 'review', 'optimizing', 'mkt_check', 'done'];
+const FLOW = ['cutout', 'listing', 'review', 'optimizing', 'mkt_check'];
 const STEP_COLOR = {
-  open: '#9B8AE0', cutout: '#4FBFA8', listing: '#6AA3EE', optimizing: '#E27BB4', mkt_check: '#F2A65A', done: '#45B98A',
+  open: '#9B8AE0', cutout: '#4FBFA8', listing: '#6AA3EE', review: '#B39DDB', optimizing: '#E27BB4', mkt_check: '#F2A65A', done: '#45B98A',
 };
 const KIND = { pick: '選品照片', cutout: '商品圖', opt: '優化截圖' };
 const STATUS = { A: '投放中', B: '優先製作', C: '可投放', D: '待製作' };
@@ -70,7 +70,7 @@ function avatar(m, size) {
 const who = (id) => { const m = member(id); return `<span class="who">${avatar(m)}${esc(m?.name ?? '—')}</span>`; };
 const stepChip = (s) => `<span class="step-chip" style="background:${STEP_COLOR[s]}">${esc(stepLabel(s))}</span>`;
 // 沒人接時的說法：行銷檢查叫「待審」，其他叫「等人認領」
-const waitText = (step) => (step === 'mkt_check' ? '待審' : '等人認領');
+const waitText = (step) => (step === 'mkt_check' || step === 'review' ? '待審' : '等人認領');
 const rolesText = (m) => (m?.roles || []).map(roleName).join('、');
 const thumb = (id, ver, cls = '') => ver
   ? `<img class="thumb ${cls}" src="/api/thumbs/${id}?v=${ver}" alt="" loading="lazy">`
@@ -394,7 +394,7 @@ function simpleCard(it) {
     <div class="sc-acts">
       ${returnTargets(it.step).length ? `<button class="btn danger" data-back="${esc(it.key)}">← 退回</button>` : ''}
       ${it.claimable ? `<button class="btn" data-claim="${it.product_id}" data-v="${it.version}" data-step="${it.step}">我來做</button>` : ''}
-      ${it.step === 'optimizing' ? assigneeSelect('mkt_check', `data-to="${esc(it.key)}"`) : ''}
+      ${it.step === 'optimizing' || it.step === 'listing' ? assigneeSelect(NEXT_STEP[it.step], `data-to="${esc(it.key)}"`) : ''}
       <button class="btn primary" data-done="${esc(it.key)}">完成 →</button>
     </div>
   </div>`;
@@ -499,9 +499,11 @@ const HELP = {
           <small>兩個人同時開始</small>
         </div>
         <div class="hf-arrow">→</div>
+        <div class="hf-box hf-mkt"><b>行銷</b><span>審核（圖、文案）</span></div>
+        <div class="hf-arrow">→</div>
         <div class="hf-box hf-des"><b>設計師</b><span>優化商品頁</span></div>
         <div class="hf-arrow">→</div>
-        <div class="hf-box hf-mkt"><b>行銷</b><span>投放前檢查（待審）</span></div>
+        <div class="hf-box hf-mkt"><b>行銷</b><span>最後審核</span></div>
         <div class="hf-arrow">→</div>
         <div class="hf-box hf-done"><b>完成</b><span>可以投放</span></div>
       </div>
@@ -944,17 +946,17 @@ function photoGrid(p, kind, { upload = false, del = false, download = false, ang
 
 // 完成後交給誰（顯示用；實際由後端決定）
 function nextHint(p, step = p.step) {
-  if (p.return_to && p.return_to !== step) return p.return_to === 'mkt_check' ? `行銷檢查（${member(p.marketer_id)?.name ?? '行銷'}）` : stepLabel(p.return_to);
+  if (p.return_to && p.return_to !== step) return stepLabel(p.return_to);
   const next = STEP_ORDER[STEP_ORDER.indexOf(step) + 1];
   if (next === 'done') return '已完成';
-  if (next === 'mkt_check') return `行銷檢查（${member(p.marketer_id)?.name ?? '行銷'}）`;
+  if (next === 'mkt_check' || next === 'review') return `${stepLabel(next)}${p.marketer_id ? `（${member(p.marketer_id)?.name ?? ''}）` : ''}`;
   return `${stepLabel(next)}`;
 }
 
 // ---------- 往前（退回）、往後（完成）：卡片和商品頁共用 ----------
 
 // 交給誰（選填）：那一步的職務排前面，其他人也可以選
-const NEXT_STEP = { cutout: 'listing', listing: 'optimizing', optimizing: 'mkt_check', mkt_check: 'done' };
+const NEXT_STEP = { cutout: 'listing', listing: 'review', review: 'optimizing', optimizing: 'mkt_check', mkt_check: 'done' };
 function assigneeOptions(step) {
   const role = S.stepRole[step];
   const ms = S.members.filter((m) => m.active).sort((a, b) => (b.roles.includes(role) ? 1 : 0) - (a.roles.includes(role) ? 1 : 0));
@@ -962,7 +964,7 @@ function assigneeOptions(step) {
 }
 const assigneeSelect = (step, attrs) => (step && step !== 'done' ? `<select class="to-pick" ${attrs} title="交給誰">${assigneeOptions(step)}</select>` : '');
 
-const TARGET_TEXT = { cutout: '做圖（美編）', listing: '文案上架（上架人員）', optimizing: '優化（設計師）' };
+const TARGET_TEXT = { cutout: '圖 → 美編', listing: '文案上架 → 上架人員', review: '審核', optimizing: '優化 → 設計師' };
 const returnTargets = (step) => FLOW.slice(0, Math.max(0, FLOW.indexOf(step)));
 
 // 做完動作後：在商品頁就回到今天要做，在清單就重新整理
@@ -1013,7 +1015,7 @@ function openReturnModal(it) {
 
 // 完成：按一下就結束，直接交給下一步（網址、改了什麼都是選填，在商品頁才填）
 function openCompleteModal(it, assignee = null) {
-  stepAction(it, 'complete', assignee ? { assignee } : {}).then((ok) => ok && afterStep(it.step === 'mkt_check' ? '檢查通過，已完成' : '已完成，交給下一步'));
+  stepAction(it, 'complete', assignee ? { assignee } : {}).then((ok) => ok && afterStep(it.step === 'mkt_check' ? '審核通過，已完成' : it.step === 'review' ? '審核通過，交給設計師' : '已完成，交給下一步'));
 }
 
 
@@ -1110,9 +1112,16 @@ function actionPanel(p) {
         <label class="field" style="margin-top:6px"><span>改了什麼（選填）</span><textarea id="opt-note" placeholder="例：換主圖、補尺寸表、調整比例"></textarea></label>
         ${foot(`<button class="btn primary act" id="complete-btn">完成 → ${toTxt}</button>`)}</div>`;
     }
+    case 'review': {
+      // 上架後審核：圖有問題退回美編，其他退回上架人員；通過才交給設計師
+      return `<div class="card action mine">${head('審核')}
+        <div class="row" style="margin:10px 0">${shop.replace('class="btn"', 'class="btn primary"')}</div>
+        <div class="muted" style="margin-bottom:6px">圖有問題 → 退回美編；其他問題 → 退回上架人員</div>
+        ${foot('<button class="btn go act" id="complete-btn">審核通過 → 優化</button>')}</div>`;
+    }
     case 'mkt_check': {
       const lastOpt = [...p.stints].reverse().find((s) => s.step === 'optimizing' && s.end_note);
-      return `<div class="card action mine">${head('檢查')}
+      return `<div class="card action mine">${head('最後審核')}
         <div class="row" style="margin:10px 0">${shop.replace('class="btn"', 'class="btn primary"')}</div>
         ${lastOpt ? `<div class="returned soft"><b>${esc(member(lastOpt.member_id)?.name ?? '')} 改了什麼</b><div class="note">${esc(lastOpt.end_note)}</div></div>` : ''}
         ${foot('<button class="btn go act" id="complete-btn">檢查通過・完成 ✓</button>')}</div>`;
@@ -1322,7 +1331,7 @@ function bindProduct(p) {
       const extra = slUrl ? { sl_url: slUrl.value.trim() } : optNote ? { note: optNote.value.trim() } : {};
       const to = Number(document.getElementById('cp-to')?.value) || null;
       if (to) extra.assignee = to;
-      doAction('complete', extra, cur.step === 'mkt_check' ? '檢查通過，已完成' : `已交給 ${nextHint(p, cur.step)}`);
+      doAction('complete', extra, cur.step === 'mkt_check' ? '審核通過，已完成' : `已交給 ${nextHint(p, cur.step)}`);
     };
   }
 

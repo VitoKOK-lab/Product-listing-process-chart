@@ -71,7 +71,7 @@ const DEFAULT_SETTINGS = {
   last_thumb_sync: null,
 };
 
-const NEXT = { open: 'cutout', cutout: 'listing', listing: 'optimizing', optimizing: 'mkt_check', mkt_check: 'done' };
+const NEXT = { open: 'cutout', cutout: 'listing', listing: 'review', review: 'optimizing', optimizing: 'mkt_check', mkt_check: 'done' };
 const PREV = { cutout: 'open', listing: 'cutout', optimizing: 'listing' };
 const PHOTO_STEP = { pick: 'open', cutout: 'cutout', opt: 'optimizing' };
 const ANGLES = ['front', 'side', 'wear', 'back', 'detail'];
@@ -260,7 +260,7 @@ async function memberHasRole(db, memberId, role) {
 
 // 輪到某一步時交給誰：行銷檢查 → 負責的行銷；其他 → 上次做這一步的人（退回、改好交回）；都沒有就放著等人認領
 async function holderFor(db, p, step) {
-  if (step === 'open' || step === 'mkt_check') {
+  if (step === 'open' || step === 'review' || step === 'mkt_check') {
     return (await memberHasRole(db, p.marketer_id, 'marketing')) ? p.marketer_id : null;
   }
   const last = await db.prepare('SELECT member_id FROM stints WHERE product_id = ? AND step = ? AND member_id IS NOT NULL ORDER BY started_at DESC, id DESC LIMIT 1')
@@ -654,7 +654,7 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params }) =>
     // 文案那一段已經在進行（同時開始的），不用再開一段
     const running = to !== 'done' && await openStint(db, id, to);
     const member = to === 'done' || running ? null : (assignee ?? await holderFor(db, p, to));
-    const pick = assignee && to === 'mkt_check' ? { marketer_id: assignee } : {};
+    const pick = assignee && (to === 'mkt_check' || to === 'review') ? { marketer_id: assignee } : {};
     const handTo = running && assignee ? [db.prepare('UPDATE stints SET member_id = ? WHERE id = ?').bind(assignee, running.id)] : [];
     return [...handTo, ...transition(db, p, open, me, {
       endReason, to, member, skipStint: !!running, updates: { return_to: null, ...pick, ...(extra.updates || {}) }, endNote: extra.endNote,
@@ -663,6 +663,14 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params }) =>
   };
   let stmts;
 
+  // 沒領就直接完成或退回：自動記在按的人名下（退回、改好交回時才找得到人）
+  if ((b.action === 'complete' || b.action === 'return') && open && !open.member_id) {
+    const upd = ['open', 'review', 'mkt_check'].includes(open.step) ? { marketer_id: me.id } : {};
+    await db.batch(handOver(db, p, open, me, { member: me.id, reason: 'claim', updates: upd, action: 'claim', detail: STEP_LABEL[open.step] }));
+    Object.assign(p, await getProduct(db, id));
+    Object.assign(open, await openStint(db, id, open.step));
+  }
+
   switch (b.action) {
     case 'claim': {
       need();
@@ -670,7 +678,7 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params }) =>
         const who = await db.prepare('SELECT name FROM members WHERE id = ?').bind(open.member_id).first();
         throw new HttpError(409, `已被 ${who?.name ?? '別人'} 認領，畫面已更新`);
       }
-      const updates = open.step === 'open' || open.step === 'mkt_check' ? { marketer_id: me.id } : {};
+      const updates = ['open', 'review', 'mkt_check'].includes(open.step) ? { marketer_id: me.id } : {};
       stmts = handOver(db, p, open, me, { member: me.id, reason: 'claim', updates, action: 'claim', detail: STEP_LABEL[open.step] });
       break;
     }
@@ -718,7 +726,8 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params }) =>
         stmts = await forward('complete', { endNote: note || null, detail: note.slice(0, 60) });
         break;
       }
-      stmts = await forward(open.step === 'mkt_check' ? 'pass' : 'complete', { action: open.step === 'mkt_check' ? 'check_pass' : 'complete' });
+      const pass = open.step === 'mkt_check' || open.step === 'review';
+      stmts = await forward(pass ? 'pass' : 'complete', { action: pass ? 'check_pass' : 'complete' });
       break;
     }
     case 'return': {
@@ -772,7 +781,7 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params }) =>
       const to = b.member_id ? intId(b.member_id, '成員') : null;
       if (to && !(await memberHasRole(db, to, open.role))) throw new HttpError(400, `此人不是「${ROLES[open.role]}」`);
       if (to === open.member_id) return json({ ok: true });
-      const updates = to && (open.step === 'open' || open.step === 'mkt_check') ? { marketer_id: to } : {};
+      const updates = to && ['open', 'review', 'mkt_check'].includes(open.step) ? { marketer_id: to } : {};
       stmts = handOver(db, p, open, me, { member: to, reason: 'reassign', updates, action: 'reassign', detail: STEP_LABEL[open.step] });
       break;
     }

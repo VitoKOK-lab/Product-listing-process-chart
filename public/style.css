@@ -848,7 +848,7 @@ table.done-table tbody tr td:last-child { border-radius: 0 18px 18px 0; }
 /* =====================================================================
    v3：首圖、狀態、認領、同步
    ===================================================================== */
-.stepper { grid-template-columns: repeat(5, 1fr); }
+.stepper { grid-template-columns: repeat(6, 1fr); }
 .thumb { width: 56px; height: 56px; border-radius: 14px; object-fit: cover; background: var(--line-2); display: block; flex: none; border: 2px solid #fff; box-shadow: 0 2px 6px rgba(120, 70, 120, .12); }
 .thumb.noimg { background: linear-gradient(135deg, #F8EEF6, #EFE8FA); }
 .thumb.sm { width: 40px; height: 40px; border-radius: 12px; }
@@ -975,7 +975,7 @@ ol.sop-list { margin: 0; padding-left: 22px; display: grid; grid-template-column
   /* 商品頁 */
   .page-head .thumb.md { width: 40px; height: 40px; }
   .page-head h1 .shop-link { font-size: 17px; }
-  .stepper { grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 2px; padding: 4px; }
+  .stepper { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 2px; padding: 4px; }
   .step { font-size: 11px; padding: 6px 2px; }
   .action { padding: 14px; }
   .flowbar { grid-template-columns: 1fr; gap: 10px; padding: 12px; }
