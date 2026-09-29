@@ -978,8 +978,8 @@ const assigneeSelect = (step, attrs, returning = false) => {
 };
 
 const TARGET_TEXT = { cutout: '圖 → 美編', listing: '文案上架 → 上架人員', review: '審核 → 行銷', optimizing: '優化 → 設計師' };
-// 設計師（優化）退回固定交給審核的行銷，由行銷判斷要退給美編還是上架人員
-const returnTargets = (step) => step === 'optimizing' ? ['review'] : FLOW.slice(0, Math.max(0, FLOW.indexOf(step)));
+// 設計師（優化）退回固定交給審核的行銷，由行銷判斷要退給美編還是上架人員；最後審核退回固定交給設計師
+const returnTargets = (step) => step === 'optimizing' ? ['review'] : step === 'mkt_check' ? ['optimizing'] : FLOW.slice(0, Math.max(0, FLOW.indexOf(step)));
 
 // 做完動作後：在商品頁就回到今天要做，在清單就重新整理
 function afterStep(msg) {

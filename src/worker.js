@@ -727,6 +727,9 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params }) =>
             updates.sheet_key = key;
           }
         }
+        // 圖是交給上架人員上傳的：有網址 = 圖和文案都好了，做圖那一段一起收掉
+        const cut = await openStint(db, id, 'cutout');
+        if (cut) extra.push(db.prepare("UPDATE stints SET ended_at = ?, end_reason = 'complete' WHERE id = ? AND ended_at IS NULL").bind(now(), cut.id));
         stmts = [...extra, ...(await forward('complete', { updates, detail: changed ? '換了新網址' : '' }))];
         break;
       }
@@ -745,8 +748,8 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params }) =>
       need();
       const from = open.step;
       const note = String(b.note ?? '').trim().slice(0, 2000); // 選填
-      // 優化退回固定交給審核（行銷）
-      const before = from === 'optimizing' ? ['review'] : FLOW.slice(0, Math.max(0, FLOW.indexOf(from)));
+      // 優化退回固定交給審核（行銷）；最後審核退回固定交給設計師
+      const before = from === 'optimizing' ? ['review'] : from === 'mkt_check' ? ['optimizing'] : FLOW.slice(0, Math.max(0, FLOW.indexOf(from)));
       const to = before.includes(b.target) ? b.target : null;
       if (!to) throw new HttpError(400, before.length ? '請選要退回哪一步' : '這一步前面沒有可以退回的步驟');
       const updates = {};
