@@ -292,10 +292,10 @@ function renderLogin() {
   $app.innerHTML = `
     <div class="login">
       <h1>選擇你的名字</h1>
-      <p class="muted">選定後這台裝置會綁定你的名字，之後打開直接進入。<br>已經在電腦登入、想加手機：用最下面的「配對碼」。選錯名字請找管理員重設。</p>
+      <p class="muted">點自己的名字就登入，電腦、手機都可以。<br>之後打開直接進入。</p>
       ${S.members.length ? Object.entries(groups).map(([role, ms]) => `
         <div class="role-group"><h3>${ROLE_NAME[role] || role}</h3>
-          <div class="name-grid">${ms.map((m) => `<button class="name-btn" data-id="${m.id}">${avatar(m)}<b>${esc(m.name)}</b></button>`).join('')}</div>
+          <div class="name-grid">${ms.map((m) => `<button class="name-btn ${m.locked ? 'locked' : ''}" data-id="${m.id}">${avatar(m)}<b>${esc(m.name)}</b>${m.locked ? '<small>用配對碼</small>' : ''}</button>`).join('')}</div>
         </div>`).join('') : '<p class="empty">目前沒有可選的名字。請聯絡管理員新增或重設。</p>'}
     </div>`;
   $app.querySelector('.login').insertAdjacentHTML('beforeend', `
@@ -317,7 +317,8 @@ function renderLogin() {
   $app.querySelectorAll('.name-btn').forEach((b) => {
     b.onclick = async () => {
       const m = member(Number(b.dataset.id));
-      if (!confirm(`確定你是「${m.name}」？\n選定後這台裝置會綁定此名字，只有管理員能重設。`)) return;
+      if (m.locked) { document.getElementById('pair-open')?.click(); return toast('管理員請用配對碼登入：在已登入的電腦按右上角「加手機」'); }
+      if (!confirm(`確定你是「${m.name}」？`)) return;
       try { await api('POST', '/api/claim', { member_id: m.id }); await boot(); } catch (e) { toast(e.message, true); await boot(); }
     };
   });

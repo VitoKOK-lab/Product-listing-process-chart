@@ -329,7 +329,8 @@ route('GET', '/api/bootstrap', async ({ db, me, settings }) => {
   let list = members.results.map((m) => ({ ...m, roles: rolesBy[m.id] || [] }));
   if (!me) {
     // 未登入只給登入頁需要的：未綁定、啟用中的名字
-    list = list.filter((m) => m.active && !m.bound).map(({ id, name, color, roles: rs, is_admin }) => ({ id, name, color, roles: rs, is_admin }));
+    // 所有人都列出來（手機直接點名字登入）；已綁定的管理員要用配對碼
+    list = list.filter((m) => m.active).map(({ id, name, color, roles: rs, is_admin, bound }) => ({ id, name, color, roles: rs, is_admin, locked: !!(is_admin && bound) }));
     return json({ me: null, members: list });
   }
   const { sheet_api_url, sheet_api_key, ...pub } = settings;
@@ -344,9 +345,16 @@ route('POST', '/api/claim', async ({ db, request, me }) => {
   if (me) throw new HttpError(400, `這台裝置已綁定「${me.name}」`);
   const id = intId((await body(request)).member_id);
   const token = newToken();
-  const res = await db.prepare('UPDATE members SET device_hash = ?, bound_at = ? WHERE id = ? AND active = 1 AND device_hash IS NULL')
-    .bind(await sha256(token), now(), id).run();
-  if (!res.meta.changes) throw new HttpError(409, '這個名字已被其他裝置綁定，請找管理員重設');
+  const m = await db.prepare('SELECT id, is_admin, device_hash FROM members WHERE id = ? AND active = 1').bind(id).first();
+  if (!m) throw new HttpError(404, '找不到這個名字');
+  const h = await sha256(token);
+  if (!m.device_hash) {
+    await db.prepare('UPDATE members SET device_hash = ?, bound_at = ? WHERE id = ?').bind(h, now(), id).run();
+  } else {
+    // 已經在別台登入過：員工直接加這台裝置；管理員要用配對碼
+    if (m.is_admin) throw new HttpError(409, '管理員加新裝置請用配對碼：在已登入的電腦按右上角「加手機」');
+    await db.prepare('INSERT INTO member_devices (hash, member_id, created_at) VALUES (?, ?, ?)').bind(h, id, now()).run();
+  }
   await log(db, id, 'member_bind').run();
   return json({ ok: true }, 200, { 'set-cookie': deviceCookie(token) });
 });

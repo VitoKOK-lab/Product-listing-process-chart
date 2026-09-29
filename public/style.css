@@ -1125,3 +1125,5 @@ details.hint .guide ul { margin: 0; padding-left: 18px; line-height: 1.8; }
   .scard .thumb { width: 48px; height: 48px; }
   .scard .sc-acts { grid-column: 1 / -1; flex-wrap: wrap; justify-content: stretch; }
 }
+.name-btn.locked { opacity: .75; }
+.name-btn.locked small { color: var(--ink-3); }
