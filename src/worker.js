@@ -736,7 +736,8 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params }) =>
       need();
       const from = open.step;
       const note = String(b.note ?? '').trim().slice(0, 2000); // 選填
-      const before = FLOW.slice(0, Math.max(0, FLOW.indexOf(from)));
+      // 優化退回固定交給審核（行銷）
+      const before = from === 'optimizing' ? ['review'] : FLOW.slice(0, Math.max(0, FLOW.indexOf(from)));
       const to = before.includes(b.target) ? b.target : null;
       if (!to) throw new HttpError(400, before.length ? '請選要退回哪一步' : '這一步前面沒有可以退回的步驟');
       const updates = {};

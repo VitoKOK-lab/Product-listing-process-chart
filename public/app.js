@@ -964,8 +964,9 @@ function assigneeOptions(step) {
 }
 const assigneeSelect = (step, attrs) => (step && step !== 'done' ? `<select class="to-pick" ${attrs} title="交給誰">${assigneeOptions(step)}</select>` : '');
 
-const TARGET_TEXT = { cutout: '圖 → 美編', listing: '文案上架 → 上架人員', review: '審核', optimizing: '優化 → 設計師' };
-const returnTargets = (step) => FLOW.slice(0, Math.max(0, FLOW.indexOf(step)));
+const TARGET_TEXT = { cutout: '圖 → 美編', listing: '文案上架 → 上架人員', review: '審核 → 行銷', optimizing: '優化 → 設計師' };
+// 設計師（優化）退回固定交給審核的行銷，由行銷判斷要退給美編還是上架人員
+const returnTargets = (step) => step === 'optimizing' ? ['review'] : FLOW.slice(0, Math.max(0, FLOW.indexOf(step)));
 
 // 做完動作後：在商品頁就回到今天要做，在清單就重新整理
 function afterStep(msg) {
@@ -986,7 +987,8 @@ function openReturnModal(it) {
     <h3>← 退回</h3>
     <p class="muted">${esc(it.name)}：改好後會直接回到你這裡。</p>
     <div class="field"><span>退回哪一步</span>
-      <div class="hour-pick">${targets.map((t) => `<label class="${targets.length === 1 ? 'on' : ''}"><input type="radio" name="rt" value="${t}" ${targets.length === 1 ? 'checked' : ''}>${esc(TARGET_TEXT[t] || stepLabel(t))}</label>`).join('')}</div></div>
+      ${targets.length === 1 ? `<b>${esc(TARGET_TEXT[targets[0]] || stepLabel(targets[0]))}</b>` : ''}
+      <div class="hour-pick" ${targets.length === 1 ? 'hidden' : ''}>${targets.map((t) => `<label class="${targets.length === 1 ? 'on' : ''}"><input type="radio" name="rt" value="${t}" ${targets.length === 1 ? 'checked' : ''}>${esc(TARGET_TEXT[t] || stepLabel(t))}</label>`).join('')}</div></div>
     <label class="rename-chk" hidden><input type="checkbox" id="rt-rename"> 商品名稱要改（網址會跟著變）</label>
     <label class="field"><span>交給誰（選填）</span><select id="rt-to">${assigneeOptions(targets.length === 1 ? targets[0] : '')}</select></label>
     <label class="field"><span>哪裡有問題（選填）</span><textarea id="rt-note" placeholder="例：沒有佩戴示意、價格寫錯"></textarea></label>
