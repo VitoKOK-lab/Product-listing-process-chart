@@ -394,7 +394,7 @@ function simpleCard(it) {
     <div class="sc-acts">
       ${returnTargets(it.step).length ? `<button class="btn danger" data-back="${esc(it.key)}">← 退回</button>` : ''}
       ${it.claimable ? `<button class="btn" data-claim="${it.product_id}" data-v="${it.version}" data-step="${it.step}">我來做</button>` : ''}
-      ${it.step === 'optimizing' || it.step === 'listing' ? assigneeSelect(NEXT_STEP[it.step], `data-to="${esc(it.key)}"`) : ''}
+      ${['optimizing', 'listing', 'review'].includes(it.step) ? assigneeSelect(NEXT_STEP[it.step], `data-to="${esc(it.key)}"`) : ''}
       <button class="btn primary" data-done="${esc(it.key)}">完成 →</button>
     </div>
   </div>`;
@@ -959,9 +959,11 @@ function nextHint(p, step = p.step) {
 const NEXT_STEP = { cutout: 'listing', listing: 'review', review: 'optimizing', optimizing: 'mkt_check', mkt_check: 'done' };
 // 交給誰：只列這一步的職務；只有一個人時不用選，直接給他
 const stepPeople = (step) => S.members.filter((m) => m.active && m.roles.includes(S.stepRole[step]));
+// 審核、優化：只有一個人就直接給他
+const AUTO_STEPS = ['review', 'mkt_check', 'optimizing'];
 const soleFor = (step, returning) => {
   const ms = stepPeople(step);
-  return ms.length === 1 && (returning || step === 'review' || step === 'mkt_check') ? ms[0] : null;
+  return ms.length === 1 && (returning || AUTO_STEPS.includes(step)) ? ms[0] : null;
 };
 function assigneeOptions(step, returning = false) {
   const one = soleFor(step, returning);

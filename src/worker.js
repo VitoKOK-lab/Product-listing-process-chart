@@ -274,7 +274,7 @@ async function holderFor(db, p, step, { returning = false } = {}) {
   const last = await db.prepare('SELECT member_id FROM stints WHERE product_id = ? AND step = ? AND member_id IS NOT NULL ORDER BY started_at DESC, id DESC LIMIT 1')
     .bind(p.id, step).first();
   if (last && await memberHasRole(db, last.member_id, STEP_ROLE[step])) return last.member_id;
-  if (returning) return soleMember(db, STEP_ROLE[step]);
+  if (returning || step === 'optimizing') return soleMember(db, STEP_ROLE[step]); // 優化只有一位設計師就直接給他
   return null; // 第一次輪到：不預設給人，自己認領
 }
 
