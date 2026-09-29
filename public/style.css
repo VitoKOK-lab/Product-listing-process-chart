@@ -1127,3 +1127,4 @@ details.hint .guide ul { margin: 0; padding-left: 18px; line-height: 1.8; }
 }
 .name-btn.locked { opacity: .75; }
 .name-btn.locked small { color: var(--ink-3); }
+.to-one { font-size: 13px; color: var(--muted, #667); white-space: nowrap; align-self: center; }

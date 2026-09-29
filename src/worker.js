@@ -259,13 +259,22 @@ async function memberHasRole(db, memberId, role) {
 }
 
 // 輪到某一步時交給誰：行銷檢查 → 負責的行銷；其他 → 上次做這一步的人（退回、改好交回）；都沒有就放著等人認領
-async function holderFor(db, p, step) {
+// 這個職務只有一個人在職：回傳那個人，否則 null
+async function soleMember(db, role) {
+  const { results } = await db.prepare(`SELECT mr.member_id AS id FROM member_roles mr JOIN members m ON m.id = mr.member_id
+    WHERE mr.role = ? AND m.active = 1 LIMIT 2`).bind(role).all();
+  return results.length === 1 ? results[0].id : null;
+}
+
+// 交給誰：審核固定是行銷（只有一位就直接給他）；退回時只有一個人可能接，也直接給他
+async function holderFor(db, p, step, { returning = false } = {}) {
   if (step === 'open' || step === 'review' || step === 'mkt_check') {
-    return (await memberHasRole(db, p.marketer_id, 'marketing')) ? p.marketer_id : null;
+    return (await memberHasRole(db, p.marketer_id, 'marketing')) ? p.marketer_id : soleMember(db, 'marketing');
   }
   const last = await db.prepare('SELECT member_id FROM stints WHERE product_id = ? AND step = ? AND member_id IS NOT NULL ORDER BY started_at DESC, id DESC LIMIT 1')
     .bind(p.id, step).first();
   if (last && await memberHasRole(db, last.member_id, STEP_ROLE[step])) return last.member_id;
+  if (returning) return soleMember(db, STEP_ROLE[step]);
   return null; // 第一次輪到：不預設給人，自己認領
 }
 
@@ -757,7 +766,7 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params }) =>
         stmts = [...nudge, log(db, me.id, 'return', id, `${STEP_LABEL[from]} → ${STEP_LABEL[to]}（還在做）：${note.slice(0, 60)}`)];
         break;
       }
-      const member = running ? null : (assignee ?? await holderFor(db, p, to));
+      const member = running ? null : (assignee ?? await holderFor(db, p, to, { returning: true }));
       stmts = [
         ...transition(db, p, open, me, {
           endReason: 'return', to, member, skipStint: !!running, startReason: 'return', note: text,

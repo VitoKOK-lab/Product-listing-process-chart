@@ -957,12 +957,23 @@ function nextHint(p, step = p.step) {
 
 // 交給誰（選填）：那一步的職務排前面，其他人也可以選
 const NEXT_STEP = { cutout: 'listing', listing: 'review', review: 'optimizing', optimizing: 'mkt_check', mkt_check: 'done' };
-function assigneeOptions(step) {
-  const role = S.stepRole[step];
-  const ms = S.members.filter((m) => m.active).sort((a, b) => (b.roles.includes(role) ? 1 : 0) - (a.roles.includes(role) ? 1 : 0));
-  return `<option value="">不指定（誰看到誰接）</option>${ms.map((m) => `<option value="${m.id}">${esc(m.name)}${m.roles.length ? `（${esc(rolesText(m))}）` : ''}</option>`).join('')}`;
+// 交給誰：只列這一步的職務；只有一個人時不用選，直接給他
+const stepPeople = (step) => S.members.filter((m) => m.active && m.roles.includes(S.stepRole[step]));
+const soleFor = (step, returning) => {
+  const ms = stepPeople(step);
+  return ms.length === 1 && (returning || step === 'review' || step === 'mkt_check') ? ms[0] : null;
+};
+function assigneeOptions(step, returning = false) {
+  const one = soleFor(step, returning);
+  if (one) return `<option value="${one.id}" selected>${esc(one.name)}</option>`;
+  return `<option value="">不指定（誰看到誰接）</option>${stepPeople(step).map((m) => `<option value="${m.id}">${esc(m.name)}</option>`).join('')}`;
 }
-const assigneeSelect = (step, attrs) => (step && step !== 'done' ? `<select class="to-pick" ${attrs} title="交給誰">${assigneeOptions(step)}</select>` : '');
+const assigneeSelect = (step, attrs, returning = false) => {
+  if (!step || step === 'done') return '';
+  const one = soleFor(step, returning);
+  if (one) return `<select class="to-pick" ${attrs} hidden>${assigneeOptions(step, returning)}</select><span class="to-one">→ ${esc(one.name)}</span>`;
+  return stepPeople(step).length ? `<select class="to-pick" ${attrs} title="交給誰">${assigneeOptions(step)}</select>` : '';
+};
 
 const TARGET_TEXT = { cutout: '圖 → 美編', listing: '文案上架 → 上架人員', review: '審核 → 行銷', optimizing: '優化 → 設計師' };
 // 設計師（優化）退回固定交給審核的行銷，由行銷判斷要退給美編還是上架人員
@@ -990,15 +1001,23 @@ function openReturnModal(it) {
       ${targets.length === 1 ? `<b>${esc(TARGET_TEXT[targets[0]] || stepLabel(targets[0]))}</b>` : ''}
       <div class="hour-pick" ${targets.length === 1 ? 'hidden' : ''}>${targets.map((t) => `<label class="${targets.length === 1 ? 'on' : ''}"><input type="radio" name="rt" value="${t}" ${targets.length === 1 ? 'checked' : ''}>${esc(TARGET_TEXT[t] || stepLabel(t))}</label>`).join('')}</div></div>
     <label class="rename-chk" hidden><input type="checkbox" id="rt-rename"> 商品名稱要改（網址會跟著變）</label>
-    <label class="field"><span>交給誰（選填）</span><select id="rt-to">${assigneeOptions(targets.length === 1 ? targets[0] : '')}</select></label>
+    <div class="field" id="rt-to-wrap"></div>
     <label class="field"><span>哪裡有問題（選填）</span><textarea id="rt-note" placeholder="例：沒有佩戴示意、價格寫錯"></textarea></label>
     <div class="acts"><button class="btn" data-close>取消</button><button class="btn warn" id="rt-go" disabled>退回</button></div>`,
   (m, close) => {
     const target = () => m.querySelector('[name=rt]:checked')?.value;
     let lastT = targets.length === 1 ? targets[0] : null;
+    // 只有一個人可能接：直接寫名字；多人才給選單
+    const drawTo = () => {
+      const one = lastT && soleFor(lastT, true);
+      m.querySelector('#rt-to-wrap').innerHTML = one
+        ? `<span>交給</span><b>${esc(one.name)}</b><input type="hidden" id="rt-to" value="${one.id}">`
+        : `<span>交給誰（選填）</span><select id="rt-to">${lastT ? assigneeOptions(lastT, true) : ''}</select>`;
+    };
+    drawTo();
     const sync = () => {
       m.querySelectorAll('.hour-pick label').forEach((l) => l.classList.toggle('on', l.querySelector('input').checked));
-      if (target() && target() !== lastT) { lastT = target(); m.querySelector('#rt-to').innerHTML = assigneeOptions(lastT); }
+      if (target() && target() !== lastT) { lastT = target(); drawTo(); }
       const rc = m.querySelector('.rename-chk');
       rc.hidden = target() !== 'listing';
       if (rc.hidden) m.querySelector('#rt-rename').checked = false;
