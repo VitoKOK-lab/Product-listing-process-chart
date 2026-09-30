@@ -995,7 +995,7 @@ function assigneeOptions(step, returning = false) {
 const assigneeSelect = (step, attrs, returning = false) => {
   if (!step || step === 'done') return '';
   const one = soleFor(step, returning);
-  if (one) return `<select class="to-pick" ${attrs} hidden>${assigneeOptions(step, returning)}</select><span class="to-one">→ ${esc(one.name)}</span>`;
+  if (one) return `<select class="to-pick" ${attrs} hidden>${assigneeOptions(step, returning)}</select>`; // 只有一個人：不顯示，直接交給他
   return stepPeople(step).length ? `<select class="to-pick" ${attrs} title="交給誰">${assigneeOptions(step)}</select>` : '';
 };
 
