@@ -9,7 +9,7 @@ import { sheetRows, planSync, extractOgImage, normalizeLink, sheetKey } from './
 
 const SCHEMA_VERSION = '3';
 // 在 v3 之後加上的欄位：舊資料庫補上
-const ADDED_COLUMNS = { products: [['sheet_row', 'INTEGER'], ['rename_pending', 'INTEGER NOT NULL DEFAULT 0']], photos: [['angle', 'TEXT']] };
+const ADDED_COLUMNS = { products: [['sheet_row', 'INTEGER'], ['rename_pending', 'INTEGER NOT NULL DEFAULT 0'], ['memo', "TEXT NOT NULL DEFAULT ''"]], photos: [['angle', 'TEXT']] };
 
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS members (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, color TEXT NOT NULL,
@@ -236,7 +236,7 @@ async function openStint(db, productId, step) {
 }
 
 const ACTION_TEXT = {
-  product_add: '新增商品', claim: '認領', release: '放回待認領', complete: '完成這一步', return: '退回',
+  product_add: '新增商品', memo_edit: '改交代事項', claim: '認領', release: '放回待認領', complete: '完成這一步', return: '退回',
   check_pass: '檢查通過', admin_advance: '手動推進', reassign: '改派', comment_add: '留言', rush_set: '設定插隊',
   rush_clear: '取消插隊', sheet_sync: '同步試算表',
 };
@@ -584,8 +584,9 @@ route('POST', '/api/products', async ({ db, env, request, me, settings }) => {
     throw new HttpError(409, `這個商品已經在系統裡了：${dup.name}\n目前在：${where}`, { id: dup.id });
   }
   const t = now();
-  const res = await db.prepare(`INSERT INTO products (name, link, sl_url, sheet_key, source, step, rush_date, created_at, updated_at)
-    VALUES (?, ?, ?, ?, 'manual', 'cutout', ?, ?, ?)`).bind(name, link, link, key, rush, t, t).run();
+  const memo = String(b.memo ?? '').trim().slice(0, 2000); // 交代事項（選填）
+  const res = await db.prepare(`INSERT INTO products (name, link, sl_url, sheet_key, source, step, rush_date, memo, created_at, updated_at)
+    VALUES (?, ?, ?, ?, 'manual', 'cutout', ?, ?, ?, ?)`).bind(name, link, link, key, rush, memo, t, t).run();
   const id = res.meta.last_row_id;
   await db.batch([
     ...[['cutout', 'editor'], ['listing', 'lister']].map(([step, role]) => db.prepare(`INSERT INTO stints (product_id, step, member_id, role, started_at, start_reason, by_id)
@@ -818,6 +819,19 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params }) =>
 });
 
 // 插隊：只選日期，不能選當天
+// 交代事項：誰都可以寫、可以改，顯示在經手人的卡片上
+route('PUT', '/api/products/:id/memo', async ({ db, request, me, params }) => {
+  requireMe(me);
+  const id = intId(params.id);
+  await getProduct(db, id);
+  const memo = String((await body(request)).memo ?? '').trim().slice(0, 2000);
+  await db.batch([
+    db.prepare('UPDATE products SET memo = ?, updated_at = ? WHERE id = ?').bind(memo, now(), id),
+    log(db, me.id, 'memo_edit', id, memo.slice(0, 60)),
+  ]);
+  return json({ ok: true });
+});
+
 route('PUT', '/api/products/:id/rush', async ({ db, request, me, params, settings }) => {
   requireMe(me);
   const id = intId(params.id);

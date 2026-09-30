@@ -392,6 +392,7 @@ function simpleCard(it) {
       <div class="sc-name">${esc(it.name)}</div>
       <div class="sc-sub">${statusBadge(it)}${designerBack(it) ? '<span class="tag return">設計師退件</span>' : `${stepChip(it.step)}${it.returned ? '<span class="tag return">被退回</span>' : ''}`}${it.suggest ? '<span class="tag first">先做這件</span>' : ''}</div>
       ${retNote(it.returned?.note) ? `<div class="ret-note">${esc(retNote(it.returned.note))}</div>` : ''}
+      ${it.memo ? `<div class="memo-note">📌 ${esc(it.memo)}</div>` : ''}
     </div>
     <div class="sc-acts">
       ${backButtons(it.step, `data-back="${esc(it.key)}"`)}
@@ -663,6 +664,7 @@ async function viewNew() {
       <p class="muted" style="margin-top:0">這裡是「廣告數據表」<b>以外</b>的商品。廣告要用的話，請自己手動加到廣告的 Excel；之後同步時，Excel 裡同一個網址會視為同一件，改用 Excel 的狀態和排序。</p>
       <label class="field"><span>商品名稱</span><input type="text" name="name" required maxlength="200"></label>
       <label class="field"><span>商品網址（Shopline 商品頁）</span><input type="url" name="link" required placeholder="https://"></label>
+      <label class="field"><span>交代事項（選填）</span><textarea name="memo" placeholder="例：文案第二段價格要改成 1,380、主圖換成側面"></textarea></label>
       <label class="rename-chk"><input type="checkbox" name="rush"> 急件</label>
       <label class="field" id="new-rush-date" hidden><span>完成日期（最早明天）</span><input type="date" name="rush_date" min="${tomorrowYmd()}" style="max-width:200px"></label>
       <p class="muted">建立後首圖會自動抓進來，接著跟其他商品一樣：美編做圖、上架人員寫文案上架。</p>
@@ -674,7 +676,7 @@ async function viewNew() {
     e.preventDefault();
     act(async () => {
       try {
-        const r = await api('POST', '/api/products', { name: f.name.value, link: f.link.value.trim(), rush: f.rush.checked, rush_date: f.rush_date.value });
+        const r = await api('POST', '/api/products', { name: f.name.value, link: f.link.value.trim(), rush: f.rush.checked, rush_date: f.rush_date.value, memo: f.memo.value });
         f.querySelectorAll('[data-dirty]').forEach((el) => delete el.dataset.dirty);
         toast(r.thumb ? '已建立，首圖已抓到' : '已建立（首圖沒抓到，之後由管理員或設計師按「同步首圖」再抓）');
         location.hash = `#/p/${r.id}`;
@@ -1198,17 +1200,27 @@ function actionPanel(p) {
   }
 }
 
+// 交代事項：誰都可以寫、可以改，經手的人在卡片上看得到
+function memoBlock(p) {
+  if (p.step === 'done') return p.memo ? `<div class="card section"><h2>交代事項</h2><div class="memo-note">${esc(p.memo)}</div></div>` : '';
+  return `<div class="card section memo-block">
+    <h2>交代事項</h2>
+    <textarea id="memo-text" placeholder="例：文案第二段價格要改成 1,380、主圖換成側面">${esc(p.memo || '')}</textarea>
+    <div class="row" style="margin-top:8px"><span class="muted">寫給接手的人看，會顯示在他的工作卡片上</span><span class="spacer"></span><button class="btn small primary" id="memo-save">儲存</button></div>
+  </div>`;
+}
+
 function rushBlock(p) {
   if (p.step === 'done' && !p.rush) return '';
   const r = p.rush;
   const can = p.step !== 'done' && !p.delisted_at;
   if (!r && !can) return '';
   return `<div class="card section rush-box ${r?.urgent || r?.overdue ? 'hot' : ''}">
-    <h2>插隊 ${r ? `<span class="tag ${r.overdue ? 'red' : r.urgent ? 'rush' : 'rush-soft'}">${r.overdue ? '已逾期' : r.urgent ? '急件' : '插隊中'}</span>` : ''}</h2>
+    <h2>急件 ${r ? `<span class="tag ${r.overdue ? 'red' : r.urgent ? 'rush' : 'rush-soft'}">${r.overdue ? '已逾期' : r.urgent ? '急件' : '插隊中'}</span>` : ''}</h2>
     ${r ? `<div class="row"><div><div class="muted">完成日期</div><b>${esc(fmtDate(r.date))} 下班前</b></div>
       ${p.step !== 'done' ? `<div><div class="muted">剩餘上班時間</div><span class="big mono">${r.remaining_h > 0 ? esc(fmtWork(r.remaining_h)) : '已逾期'}</span></div>` : `<div>${r.missed ? '<span class="tag red">錯過插隊日</span>' : '<span class="tag green">準時完成</span>'}</div>`}</div>` : '<p class="muted" style="margin:0 0 8px">設定完成日期後，這件會排到所有人待辦的最前面；剩 2 個上班日內變急件。</p>'}
     ${can ? `<div class="row" style="margin-top:10px"><input type="date" id="rush-date" min="${tomorrowYmd()}" value="${esc(r?.date ?? '')}" style="max-width:180px">
-      <button class="btn small primary" id="rush-set">${r ? '改日期' : '設定插隊'}</button>${r ? '<button class="btn small" id="rush-clear">取消插隊</button>' : ''}
+      <button class="btn small primary" id="rush-set">${r ? '改日期' : '設定急件'}</button>${r ? '<button class="btn small" id="rush-clear">取消急件</button>' : ''}
       <span class="muted">最早只能選明天</span></div>` : ''}
   </div>`;
 }
@@ -1320,6 +1332,7 @@ async function viewProduct(idStr) {
     $app.innerHTML = `<div class="staff-page">
       <div class="page-head"><a href="#/radar" class="btn small">← 今天要做</a></div>
       <div class="staff-title">${thumb(p.id, p.thumb_ver, 'md')}<h1>${esc(p.name)}</h1><div class="sc-sub">${statusBadge(p)}</div></div>
+      ${memoBlock(p)}
       <div id="action">${actionPanel(p)}</div>
       ${rushBlock(p)}</div>`;
     return bindProduct(p);
@@ -1349,6 +1362,7 @@ async function viewProduct(idStr) {
         ${commentsBlock(p)}
       </div>
       <div>
+        ${memoBlock(p)}
         ${rushBlock(p)}
         ${S.me.is_admin ? timelineBlock(p) : ''}
       </div>
@@ -1358,6 +1372,13 @@ async function viewProduct(idStr) {
 
 function bindProduct(p) {
   const id = p.id;
+  const ms = document.getElementById('memo-save');
+  if (ms) {
+    const mt = document.getElementById('memo-text');
+    ms.onclick = () => act(() => api('PUT', `/api/products/${id}/memo`, { memo: mt.value }), '交代事項已儲存');
+    // 寫完直接按完成也不會漏：離開輸入框就自動存
+    mt.onchange = () => api('PUT', `/api/products/${id}/memo`, { memo: mt.value }).then(() => toast('交代事項已儲存')).catch((e) => toast(e.message, true));
+  }
   const cur = chosenStint(p);
   const doAction = (action, extra = {}, doneMsg = null) => act(async () => {
     await api('POST', `/api/products/${id}/action`, { action, version: p.version, step: action === 'admin_advance' ? p.step : (cur?.step ?? p.step), ...extra });

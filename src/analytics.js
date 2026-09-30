@@ -238,7 +238,7 @@ export function buildRadar({ products, allProducts, stints, mentions, me, meRole
 
       level: c.level, group, tags, returned: r ? { note: r.note, by: r.by_id } : null, rush,
       status_code: p.status_code || '', rush_date: p.rush_date ?? null, thumb: p.thumb_ver || 0, version: p.version,
-      sl_url: p.sl_url || '', rename_pending: !!p.rename_pending, parallel: s.step !== p.step,
+      sl_url: p.sl_url || '', memo: p.memo || '', rename_pending: !!p.rename_pending, parallel: s.step !== p.step,
       sheet_row: p.sheet_row ?? null,
     });
   }

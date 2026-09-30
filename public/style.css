@@ -1135,3 +1135,6 @@ details.hint .guide ul { margin: 0; padding-left: 18px; line-height: 1.8; }
 .rev-head .caret { margin-left: auto; }
 .rev-head.on { border-color: var(--ruby); color: var(--ruby); }
 .staff-home .page-head { flex-wrap: wrap; gap: 6px; }
+/* 交代事項 */
+.memo-note { margin-top: 6px; font-size: 13px; background: var(--topaz-soft); color: var(--ink); border-radius: 12px; padding: 6px 10px; white-space: pre-wrap; }
+.memo-block textarea { width: 100%; min-height: 72px; }
