@@ -560,20 +560,26 @@ route('GET', '/api/radar', async ({ db, me, url, settings }) => {
 // ---------- 商品 ----------
 
 // 新增商品（廣告數據表以外的）：上架人員輸入名稱和網址，首圖自動抓；之後 Excel 加了同一個網址就視為同一件
-route('POST', '/api/products', async ({ db, env, request, me }) => {
+route('POST', '/api/products', async ({ db, env, request, me, settings }) => {
   requireMe(me);
-  if (!me.is_admin && !hasRole(me, 'lister')) throw new HttpError(403, '只有上架人員或管理員可以新增商品');
+  // 誰都可以新增商品頁資料
   const b = await body(request);
   const name = text(b.name, '商品名稱', 200);
   const link = String(b.link ?? '').trim().slice(0, 500);
   if (!/^https?:\/\//.test(link)) throw new HttpError(400, '請貼上商品網址（http 開頭）');
+  // 急件：勾了就要選完成日期（最早明天）
+  const rush = b.rush ? String(b.rush_date ?? '') : null;
+  if (rush !== null) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(rush)) throw new HttpError(400, '急件請選完成日期');
+    if (rush <= localYmd(now(), cfgOf(settings))) throw new HttpError(400, '完成日期最早只能選明天');
+  }
   const key = sheetKey(name, link);
   const dup = await db.prepare(`SELECT id, name FROM products WHERE deleted_at IS NULL AND (sheet_key = ?
     OR id = (SELECT product_id FROM product_aliases WHERE key = ?))`).bind(key, key).first();
   if (dup) throw new HttpError(409, `這個網址已經在系統裡了：${dup.name}`, { id: dup.id });
   const t = now();
-  const res = await db.prepare(`INSERT INTO products (name, link, sl_url, sheet_key, source, step, created_at, updated_at)
-    VALUES (?, ?, ?, ?, 'manual', 'cutout', ?, ?)`).bind(name, link, link, key, t, t).run();
+  const res = await db.prepare(`INSERT INTO products (name, link, sl_url, sheet_key, source, step, rush_date, created_at, updated_at)
+    VALUES (?, ?, ?, ?, 'manual', 'cutout', ?, ?, ?)`).bind(name, link, link, key, rush, t, t).run();
   const id = res.meta.last_row_id;
   await db.batch([
     ...[['cutout', 'editor'], ['listing', 'lister']].map(([step, role]) => db.prepare(`INSERT INTO stints (product_id, step, member_id, role, started_at, start_reason, by_id)

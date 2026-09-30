@@ -254,8 +254,7 @@ function renderNav() {
   const nav = document.getElementById('nav');
   nav.hidden = staff();
   if (staff()) { nav.innerHTML = ''; return; }
-  const canAdd = hasRole('lister') || S.me.is_admin;
-  const items = [['overview', '全覽'], ['radar', '今天要做'], ...(canAdd ? [['new', '新增商品']] : []), ...(S.me.is_admin ? [['analysis', '成效分析']] : []), ['log', '紀錄'], ['help', '使用說明'], ...(S.me.is_admin ? [['settings', '設定']] : [])];
+  const items = [['overview', '全覽'], ['radar', '今天要做'], ['new', '新增商品'], ...(S.me.is_admin ? [['analysis', '成效分析']] : []), ['log', '紀錄'], ['help', '使用說明'], ...(S.me.is_admin ? [['settings', '設定']] : [])];
   document.getElementById('nav').innerHTML = items.map(([r, l]) => `<a href="#/${r}" data-route="${r}">${l}</a>`).join('');
 }
 
@@ -338,7 +337,7 @@ async function render() {
   document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.route === route || (route === 'p' && a.dataset.route === 'overview')));
   const views = { overview: viewOverview, radar: viewRadar, analysis: viewAnalysis, log: viewLog, settings: viewSettings, p: viewProduct, new: viewNew, help: viewHelp };
   // 員工只有：今天要做、商品頁、（上架人員）新增商品
-  const allowed = staff() ? ['radar', 'p', ...(hasRole('lister') ? ['new'] : [])] : Object.keys(views);
+  const allowed = staff() ? ['radar', 'p', 'new'] : Object.keys(views);
   try {
     await ((allowed.includes(route) && views[route]) || (staff() ? viewRadar : viewOverview))(arg);
   } catch (e) {
@@ -404,12 +403,28 @@ function simpleCard(it) {
 
 async function viewStaffRadar() {
   const r = await api('GET', '/api/radar?scope=me');
-  const mine = r.items.filter((i) => i.holder_id === S.me.id);
-  const pool = r.items.filter((i) => i.claimable);
+  let items = r.items.filter((i) => i.holder_id === S.me.id || i.claimable);
+  // 審核人員：上架後審核（退回重做圖、文）和設計師做完的結案審查，分成兩個分頁
+  let tabs = '';
+  if (hasRole('marketing')) {
+    const isFinal = (i) => i.step === 'mkt_check';
+    const nFinal = items.filter(isFinal).length;
+    const tab = S.revTab === 'final' ? 'final' : 'review';
+    tabs = `<div class="rev-tabs">
+      <button class="${tab === 'review' ? 'on' : ''}" data-rev="review">上架審核 <span class="num">${items.length - nFinal}</span><small>圖、文有問題退回重做</small></button>
+      <button class="${tab === 'final' ? 'on' : ''}" data-rev="final">結案審查 <span class="num">${nFinal}</span><small>設計師做完的</small></button>
+    </div>`;
+    items = items.filter((i) => isFinal(i) === (tab === 'final'));
+  }
+  const mine = items.filter((i) => i.holder_id === S.me.id);
+  const pool = items.filter((i) => i.holder_id !== S.me.id && i.claimable);
   S.radarKeys = [...mine, ...pool].map((i) => i.product_id);
   $app.innerHTML = `
     <div data-view="radar" class="staff-home">
-      <div class="page-head"><h1>今天要做</h1><span class="spacer"></span>${hasRole('lister') ? '<a class="btn small" href="#/new">＋ 新增商品</a>' : ''}</div>
+      <div class="page-head"><h1>今天要做</h1><span class="spacer"></span>
+        ${S.me.can_sync ? `<button class="btn small" id="sync-sheet" ${S.settings.sheet_api_url ? '' : 'disabled'}>同步 Excel</button><button class="btn small" id="sync-thumbs" ${S.settings.sheet_api_url ? '' : 'disabled'}>同步首圖</button>` : ''}
+        <a class="btn small" href="#/new">＋ 新增商品</a></div>
+      ${tabs}
       <input type="search" id="find" class="find" placeholder="搜尋商品名稱" value="${esc(S.find || '')}" autocomplete="off">
       ${mine.length ? `<h2 class="sh">我手上的 <span class="num">${mine.length}</span></h2><div class="slist">${mine.map(simpleCard).join('')}</div>` : ''}
       ${pool.length ? `<h2 class="sh">可以接的 <span class="num">${pool.length}</span></h2><div class="slist">${pool.map(simpleCard).join('')}</div>` : ''}
@@ -428,6 +443,9 @@ async function viewStaffRadar() {
     };
   });
   $app.querySelectorAll('.to-pick').forEach((sel) => { sel.onclick = (e) => e.stopPropagation(); });
+  $app.querySelectorAll('[data-rev]').forEach((b) => { b.onclick = () => { S.revTab = b.dataset.rev; viewStaffRadar(); }; });
+  const ss = document.getElementById('sync-sheet');
+  if (ss) { ss.onclick = () => syncSheet(false); document.getElementById('sync-thumbs').onclick = syncThumbs; }
   // 搜尋：打字就篩選，重新整理後保留
   const find = document.getElementById('find');
   const applyFind = () => {
@@ -639,24 +657,26 @@ function viewHelp(tab) {
 // ---------- 新增商品（廣告數據表以外） ----------
 
 async function viewNew() {
-  if (!hasRole('lister') && !S.me.is_admin) { $app.innerHTML = '<p class="empty">只有上架人員可以新增商品</p>'; return; }
   $app.innerHTML = `
-    <div class="page-head"><h1>新增商品</h1></div>
+    <div class="page-head">${staff() ? '<a href="#/radar" class="btn small">← 今天要做</a>' : ''}<h1>新增商品</h1></div>
     <form class="card section" id="new-form" style="max-width:680px">
       <p class="muted" style="margin-top:0">這裡是「廣告數據表」<b>以外</b>的商品。廣告要用的話，請自己手動加到廣告的 Excel；之後同步時，Excel 裡同一個網址會視為同一件，改用 Excel 的狀態和排序。</p>
       <label class="field"><span>商品名稱</span><input type="text" name="name" required maxlength="200"></label>
       <label class="field"><span>商品網址（Shopline 商品頁）</span><input type="url" name="link" required placeholder="https://"></label>
+      <label class="rename-chk"><input type="checkbox" name="rush"> 急件</label>
+      <label class="field" id="new-rush-date" hidden><span>完成日期（最早明天）</span><input type="date" name="rush_date" min="${tomorrowYmd()}" style="max-width:200px"></label>
       <p class="muted">建立後首圖會自動抓進來，接著跟其他商品一樣：美編做圖、上架人員寫文案上架。</p>
       <div class="row"><span class="spacer"></span><button class="btn primary act">建立</button></div>
     </form>`;
   const f = document.getElementById('new-form');
+  f.rush.onchange = () => { document.getElementById('new-rush-date').hidden = !f.rush.checked; };
   f.onsubmit = (e) => {
     e.preventDefault();
     act(async () => {
       try {
-        const r = await api('POST', '/api/products', { name: f.name.value, link: f.link.value.trim() });
+        const r = await api('POST', '/api/products', { name: f.name.value, link: f.link.value.trim(), rush: f.rush.checked, rush_date: f.rush_date.value });
         f.querySelectorAll('[data-dirty]').forEach((el) => delete el.dataset.dirty);
-        toast(r.thumb ? '已建立，首圖已抓到' : '已建立（首圖沒抓到，之後按同步首圖再試）');
+        toast(r.thumb ? '已建立，首圖已抓到' : '已建立（首圖沒抓到，之後由管理員或設計師按「同步首圖」再抓）');
         location.hash = `#/p/${r.id}`;
       } catch (err) {
         if (err.data?.id && confirm(`${err.message}\n要打開那一件嗎？`)) { location.hash = `#/p/${err.data.id}`; return; }
