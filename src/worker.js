@@ -576,7 +576,13 @@ route('POST', '/api/products', async ({ db, env, request, me, settings }) => {
   const key = sheetKey(name, link);
   const dup = await db.prepare(`SELECT id, name FROM products WHERE deleted_at IS NULL AND (sheet_key = ?
     OR id = (SELECT product_id FROM product_aliases WHERE key = ?))`).bind(key, key).first();
-  if (dup) throw new HttpError(409, `這個網址已經在系統裡了：${dup.name}`, { id: dup.id });
+  if (dup) {
+    // 告訴他這件現在在哪一步、誰手上
+    const at = await db.prepare(`SELECT s.step, m.name FROM stints s LEFT JOIN members m ON m.id = s.member_id
+      WHERE s.product_id = ? AND s.ended_at IS NULL ORDER BY s.id`).bind(dup.id).all();
+    const where = at.results.map((r) => `${STEP_LABEL[r.step]}・${r.name ?? '還沒人接'}`).join('、') || '已完成';
+    throw new HttpError(409, `這個商品已經在系統裡了：${dup.name}\n目前在：${where}`, { id: dup.id });
+  }
   const t = now();
   const res = await db.prepare(`INSERT INTO products (name, link, sl_url, sheet_key, source, step, rush_date, created_at, updated_at)
     VALUES (?, ?, ?, ?, 'manual', 'cutout', ?, ?, ?)`).bind(name, link, link, key, rush, t, t).run();
