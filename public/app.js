@@ -75,9 +75,12 @@ const rolesText = (m) => (m?.roles || []).map(roleName).join('、');
 const thumb = (id, ver, cls = '') => ver
   ? `<img class="thumb ${cls}" src="/api/thumbs/${id}?v=${ver}" alt="" loading="lazy">`
   : `<span class="thumb ${cls} noimg"></span>`;
+// 總表優先序（A～D）＋急件，兩個都顯示
 function statusBadge(x) {
-  if (x.rush_date && x.step !== 'done') return `<span class="st st-R" title="插隊，${esc(fmtDate(x.rush_date))}下班前完成">插隊 ${esc(x.rush_date.slice(5).replace('-', '/'))}</span>`;
-  return x.status_code ? `<span class="st st-${x.status_code}" title="${STATUS[x.status_code]}">${x.status_code} ${STATUS[x.status_code]}</span>` : '';
+  const rush = x.rush_date && x.step !== 'done'
+    ? `<span class="st st-R" title="急件，${esc(fmtDate(x.rush_date))}下班前完成">急件 ${esc(x.rush_date.slice(5).replace('-', '/'))}</span>` : '';
+  const pri = x.status_code && STATUS[x.status_code] ? `<span class="st st-${x.status_code}" title="總表優先序">${x.status_code} ${STATUS[x.status_code]}</span>` : '';
+  return rush + pri;
 }
 // 商品名稱連到 Shopline 商品頁
 const shopName = (name, link) => link
@@ -383,19 +386,18 @@ function suggestWhy(it) {
 
 // 員工版今天要做：只有兩區（我手上的、可以接的），一張卡一個按鈕
 function simpleCard(it) {
-  const md = it.rush ? it.rush.date.slice(5).replace('-', '/') : '';
   return `<div class="card scard ${it.suggest ? 'first' : ''}" data-href="#/p/${it.product_id}" data-name="${esc(it.name.toLowerCase())}">
     ${thumb(it.product_id, it.thumb)}
     <div class="sc-main">
       <div class="sc-name">${esc(it.name)}</div>
-      <div class="sc-sub">${stepChip(it.step)}${it.suggest ? '<span class="tag first">先做這件</span>' : ''}${it.rush ? `<span class="tag rush">插隊 ${esc(md)}</span>` : ''}${it.returned ? '<span class="tag return">被退回</span>' : ''}</div>
+      <div class="sc-sub">${statusBadge(it)}${stepChip(it.step)}${it.suggest ? '<span class="tag first">先做這件</span>' : ''}${it.returned ? '<span class="tag return">被退回</span>' : ''}</div>
       ${it.returned?.note ? `<div class="ret-note">${esc(it.returned.note)}</div>` : ''}
     </div>
     <div class="sc-acts">
-      ${returnTargets(it.step).length ? `<button class="btn danger" data-back="${esc(it.key)}">← 退回</button>` : ''}
+      ${returnTargets(it.step).length ? `<button class="btn danger" data-back="${esc(it.key)}">${backText(it.step)}</button>` : ''}
       ${it.claimable ? `<button class="btn" data-claim="${it.product_id}" data-v="${it.version}" data-step="${it.step}">我來做</button>` : ''}
       ${['optimizing', 'listing', 'review'].includes(it.step) ? assigneeSelect(NEXT_STEP[it.step], `data-to="${esc(it.key)}"`) : ''}
-      <button class="btn primary" data-done="${esc(it.key)}">完成 →</button>
+      <button class="btn primary" data-done="${esc(it.key)}">${doneText(it.step)}</button>
     </div>
   </div>`;
 }
@@ -979,6 +981,9 @@ const assigneeSelect = (step, attrs, returning = false) => {
 
 const TARGET_TEXT = { cutout: '圖 → 美編', listing: '文案上架 → 上架人員', review: '審核 → 行銷', optimizing: '優化 → 設計師' };
 // 設計師（優化）退回固定交給審核的行銷，由行銷判斷要退給美編還是上架人員；最後審核退回固定交給設計師
+// 設計師前後都是審核（巧芸）：往前叫「退件」，往後叫「已完成送審」
+const backText = (step) => (step === 'optimizing' ? '← 退件' : '← 退回');
+const doneText = (step) => (step === 'optimizing' ? '已完成送審 →' : '完成 →');
 const returnTargets = (step) => step === 'optimizing' ? ['review'] : step === 'mkt_check' ? ['optimizing'] : FLOW.slice(0, Math.max(0, FLOW.indexOf(step)));
 
 // 做完動作後：在商品頁就回到今天要做，在清單就重新整理
@@ -997,7 +1002,7 @@ function openReturnModal(it) {
   const targets = returnTargets(it.step);
   if (!targets.length) return toast('這一步前面沒有可以退回的步驟', true);
   openModal(`
-    <h3>← 退回</h3>
+    <h3>${backText(it.step)}</h3>
     <p class="muted">${esc(it.name)}：改好後會直接回到你這裡。</p>
     <div class="field"><span>退回哪一步</span>
       ${targets.length === 1 ? `<b>${esc(TARGET_TEXT[targets[0]] || stepLabel(targets[0]))}</b>` : ''}
@@ -1005,7 +1010,7 @@ function openReturnModal(it) {
     <label class="rename-chk" hidden><input type="checkbox" id="rt-rename"> 商品名稱要改（網址會跟著變）</label>
     <div class="field" id="rt-to-wrap"></div>
     <label class="field"><span>哪裡有問題（選填）</span><textarea id="rt-note" placeholder="例：沒有佩戴示意、價格寫錯"></textarea></label>
-    <div class="acts"><button class="btn" data-close>取消</button><button class="btn warn" id="rt-go" disabled>退回</button></div>`,
+    <div class="acts"><button class="btn" data-close>取消</button><button class="btn warn" id="rt-go" disabled>${it.step === 'optimizing' ? '退件' : '退回'}</button></div>`,
   (m, close) => {
     const target = () => m.querySelector('[name=rt]:checked')?.value;
     let lastT = targets.length === 1 ? targets[0] : null;
@@ -1095,7 +1100,7 @@ function actionPanel(p) {
   const canReturn = returnTargets(step).length > 0;
   // 中間是自己這一步：往左退回上一步，往右完成交給下一步（行銷檢查往右就是完成）
   const foot = (btn, miss = '') => `<div class="flowbar">
-      <div class="fb-back">${canReturn ? '<button class="btn danger act" data-open-return>← 退回</button>' : ''}</div>
+      <div class="fb-back">${canReturn ? `<button class="btn danger act" data-open-return>${backText(step)}</button>` : ''}</div>
       <div class="fb-cur"><b>${esc(stepLabel(step))}</b></div>
       <div class="fb-next">${assigneeSelect(p.return_to && p.return_to !== step ? p.return_to : NEXT_STEP[step], 'id="cp-to"')}${btn}</div>
     </div>
@@ -1133,7 +1138,7 @@ function actionPanel(p) {
       return `<div class="card action mine">${returned}${head('優化')}
         <div class="row" style="margin:10px 0">${shop}</div>
         <label class="field" style="margin-top:6px"><span>改了什麼（選填）</span><textarea id="opt-note" placeholder="例：換主圖、補尺寸表、調整比例"></textarea></label>
-        ${foot(`<button class="btn primary act" id="complete-btn">完成 → ${toTxt}</button>`)}</div>`;
+        ${foot('<button class="btn primary act" id="complete-btn">已完成送審 →</button>')}</div>`;
     }
     case 'review': {
       // 上架後審核：圖有問題退回美編，其他退回上架人員；通過才交給設計師
@@ -1275,7 +1280,7 @@ async function viewProduct(idStr) {
     // 員工：只有工作卡片（行銷多一個插隊）
     $app.innerHTML = `<div class="staff-page">
       <div class="page-head"><a href="#/radar" class="btn small">← 今天要做</a></div>
-      <div class="staff-title">${thumb(p.id, p.thumb_ver, 'md')}<h1>${esc(p.name)}</h1></div>
+      <div class="staff-title">${thumb(p.id, p.thumb_ver, 'md')}<h1>${esc(p.name)}</h1><div class="sc-sub">${statusBadge(p)}</div></div>
       <div id="action">${actionPanel(p)}</div>
       ${rushBlock(p)}</div>`;
     return bindProduct(p);
