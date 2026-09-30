@@ -252,9 +252,10 @@ function setViewAs(id) {
 
 function renderNav() {
   const nav = document.getElementById('nav');
-  nav.hidden = staff();
-  if (staff()) { nav.innerHTML = ''; return; }
-  const items = [['overview', '全覽'], ['radar', '今天要做'], ['new', '新增商品'], ...(S.me.is_admin ? [['analysis', '成效分析']] : []), ['log', '紀錄'], ['help', '使用說明'], ...(S.me.is_admin ? [['settings', '設定']] : [])];
+  nav.hidden = false;
+  // 員工只有兩頁：今天要做、總表（看每件卡在誰手上）
+  if (staff()) { nav.innerHTML = [['radar', '今天要做'], ['overview', '總表']].map(([r, l]) => `<a href="#/${r}" data-route="${r}">${l}</a>`).join(''); return; }
+  const items = [['overview', '總表'], ['radar', '今天要做'], ...(S.me.is_admin ? [['analysis', '成效分析']] : []), ['log', '紀錄'], ['help', '使用說明'], ...(S.me.is_admin ? [['settings', '設定']] : [])];
   document.getElementById('nav').innerHTML = items.map(([r, l]) => `<a href="#/${r}" data-route="${r}">${l}</a>`).join('');
 }
 
@@ -337,7 +338,7 @@ async function render() {
   document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.route === route || (route === 'p' && a.dataset.route === 'overview')));
   const views = { overview: viewOverview, radar: viewRadar, analysis: viewAnalysis, log: viewLog, settings: viewSettings, p: viewProduct, new: viewNew, help: viewHelp };
   // 員工只有：今天要做、商品頁、（上架人員）新增商品
-  const allowed = staff() ? ['radar', 'p', 'new'] : Object.keys(views);
+  const allowed = staff() ? ['radar', 'overview', 'p', 'new'] : Object.keys(views);
   try {
     await ((allowed.includes(route) && views[route]) || (staff() ? viewRadar : viewOverview))(arg);
   } catch (e) {
@@ -427,9 +428,7 @@ async function viewStaffRadar() {
   }
   $app.innerHTML = `
     <div data-view="radar" class="staff-home">
-      <div class="page-head"><h1>今天要做</h1><span class="spacer"></span>
-        ${S.me.can_sync ? `<button class="btn small" id="sync-sheet" ${S.settings.sheet_api_url ? '' : 'disabled'}>同步 Excel</button><button class="btn small" id="sync-thumbs" ${S.settings.sheet_api_url ? '' : 'disabled'}>同步首圖</button>` : ''}
-        <a class="btn small" href="#/new">＋ 新增商品</a></div>
+      <div class="page-head"><h1>今天要做</h1></div>
       <input type="search" id="find" class="find" placeholder="搜尋商品名稱" value="${esc(S.find || '')}" autocomplete="off">
       ${body}
     </div>`;
@@ -447,8 +446,6 @@ async function viewStaffRadar() {
   });
   $app.querySelectorAll('.to-pick').forEach((sel) => { sel.onclick = (e) => e.stopPropagation(); });
   $app.querySelectorAll('[data-rev]').forEach((b) => { b.onclick = () => { S.revTab = b.dataset.rev; viewStaffRadar(); }; });
-  const ss = document.getElementById('sync-sheet');
-  if (ss) { ss.onclick = () => syncSheet(false); document.getElementById('sync-thumbs').onclick = syncThumbs; }
   // 搜尋：打字就篩選，重新整理後保留
   const find = document.getElementById('find');
   const applyFind = () => {
@@ -661,7 +658,7 @@ function viewHelp(tab) {
 
 async function viewNew() {
   $app.innerHTML = `
-    <div class="page-head">${staff() ? '<a href="#/radar" class="btn small">← 今天要做</a>' : ''}<h1>新增商品</h1></div>
+    <div class="page-head"><a href="#/overview" class="btn small">← 總表</a><h1>新增商品</h1></div>
     <form class="card section" id="new-form" style="max-width:680px">
       <p class="muted" style="margin-top:0">這裡是「廣告數據表」<b>以外</b>的商品。廣告要用的話，請自己手動加到廣告的 Excel；之後同步時，Excel 裡同一個網址會視為同一件，改用 Excel 的狀態和排序。</p>
       <label class="field"><span>商品名稱</span><input type="text" name="name" required maxlength="200"></label>
@@ -793,7 +790,7 @@ async function viewOverview() {
   const doneShown = S.ovDoneAll ? done : done.slice(0, 30);
   $app.innerHTML = `
     <div class="page-head">
-      <h1>全覽</h1>
+      <h1>總表</h1><a class="btn small primary" href="#/new">＋ 新增商品</a>
       <div class="seg batch-seg">${filters.map(([k, l, n]) => `<button data-filter="${k}" class="${S.ovFilter === k ? 'on' : ''}">${esc(l)} <span class="mono">${n}</span></button>`).join('')}</div>
     </div>
     ${syncBar()}
@@ -1317,7 +1314,7 @@ async function viewProduct(idStr) {
   }
   $app.innerHTML = `
     <div class="page-head">
-      <a href="#/overview" class="btn small">← 全覽</a>
+      <a href="#/overview" class="btn small">← 總表</a>
       ${thumb(p.id, p.thumb_ver, 'md')}
       <h1>${shopName(p.name, p.link)}</h1>${statusBadge(p)}${stepChip(p.step)}
       ${p.delisted_at ? '<span class="tag red">已下架</span>' : ''}
