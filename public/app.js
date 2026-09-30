@@ -389,11 +389,11 @@ function simpleCard(it) {
     ${thumb(it.product_id, it.thumb)}
     <div class="sc-main">
       <div class="sc-name">${esc(it.name)}</div>
-      <div class="sc-sub">${statusBadge(it)}${stepChip(it.step)}${it.suggest ? '<span class="tag first">先做這件</span>' : ''}${it.returned ? '<span class="tag return">被退回</span>' : ''}</div>
-      ${it.returned?.note ? `<div class="ret-note">${esc(it.returned.note)}</div>` : ''}
+      <div class="sc-sub">${statusBadge(it)}${designerBack(it) ? '<span class="tag return">設計師退件</span>' : `${stepChip(it.step)}${it.returned ? '<span class="tag return">被退回</span>' : ''}`}${it.suggest ? '<span class="tag first">先做這件</span>' : ''}</div>
+      ${retNote(it.returned?.note) ? `<div class="ret-note">${esc(retNote(it.returned.note))}</div>` : ''}
     </div>
     <div class="sc-acts">
-      ${returnTargets(it.step).length ? `<button class="btn danger" data-back="${esc(it.key)}">${backText(it.step)}</button>` : ''}
+      ${backButtons(it.step, `data-back="${esc(it.key)}"`)}
       ${it.claimable ? `<button class="btn" data-claim="${it.product_id}" data-v="${it.version}" data-step="${it.step}">我來做</button>` : ''}
       ${['optimizing', 'listing', 'review'].includes(it.step) ? assigneeSelect(NEXT_STEP[it.step], `data-to="${esc(it.key)}"`) : ''}
       <button class="btn primary" data-done="${esc(it.key)}">${doneText(it.step)}</button>
@@ -403,39 +403,42 @@ function simpleCard(it) {
 
 async function viewStaffRadar() {
   const r = await api('GET', '/api/radar?scope=me');
-  let items = r.items.filter((i) => i.holder_id === S.me.id || i.claimable);
-  // 審核人員：上架後審核（退回重做圖、文）和設計師做完的結案審查，分成兩個分頁
-  let tabs = '';
+  const items = r.items.filter((i) => i.holder_id === S.me.id || i.claimable);
+  // 一段清單：我手上的在前、可以接的在後，不再分小標
+  const list = (xs) => {
+    const sorted = [...xs.filter((i) => i.holder_id === S.me.id), ...xs.filter((i) => i.holder_id !== S.me.id)];
+    return sorted.length ? `<div class="slist">${sorted.map(simpleCard).join('')}</div>` : '<div class="card calm"><b>目前沒有工作</b></div>';
+  };
+  let body;
   if (hasRole('marketing')) {
-    const isFinal = (i) => i.step === 'mkt_check';
-    const nFinal = items.filter(isFinal).length;
-    const tab = S.revTab === 'final' ? 'final' : 'review';
-    tabs = `<div class="rev-tabs">
-      <button class="${tab === 'review' ? 'on' : ''}" data-rev="review">上架審核 <span class="num">${items.length - nFinal}</span><small>圖、文有問題退回重做</small></button>
-      <button class="${tab === 'final' ? 'on' : ''}" data-rev="final">結案審查 <span class="num">${nFinal}</span><small>設計師做完的</small></button>
-    </div>`;
-    items = items.filter((i) => isFinal(i) === (tab === 'final'));
+    // 審核人員：上架審核、結案審查兩個選單，點哪個就在它下面展開那一份
+    const open = S.revTab === 'final' ? 'final' : 'review';
+    const groups = [
+      ['review', '上架審核', '圖、文有問題退回重做', items.filter((i) => i.step !== 'mkt_check')],
+      ['final', '結案審查', '設計師做完的', items.filter((i) => i.step === 'mkt_check')],
+    ];
+    body = groups.map(([k, t, sub, xs]) => `
+      <button class="rev-head ${open === k ? 'on' : ''}" data-rev="${k}"><b>${t}</b><span class="num">${xs.length}</span><small>${sub}</small><span class="caret">${open === k ? '▾' : '▸'}</span></button>
+      ${open === k ? list(xs) : ''}`).join('');
+    S.radarKeys = groups.find(([k]) => k === open)[3].map((i) => i.product_id);
+  } else {
+    body = list(items);
+    S.radarKeys = items.map((i) => i.product_id);
   }
-  const mine = items.filter((i) => i.holder_id === S.me.id);
-  const pool = items.filter((i) => i.holder_id !== S.me.id && i.claimable);
-  S.radarKeys = [...mine, ...pool].map((i) => i.product_id);
   $app.innerHTML = `
     <div data-view="radar" class="staff-home">
       <div class="page-head"><h1>今天要做</h1><span class="spacer"></span>
         ${S.me.can_sync ? `<button class="btn small" id="sync-sheet" ${S.settings.sheet_api_url ? '' : 'disabled'}>同步 Excel</button><button class="btn small" id="sync-thumbs" ${S.settings.sheet_api_url ? '' : 'disabled'}>同步首圖</button>` : ''}
         <a class="btn small" href="#/new">＋ 新增商品</a></div>
-      ${tabs}
       <input type="search" id="find" class="find" placeholder="搜尋商品名稱" value="${esc(S.find || '')}" autocomplete="off">
-      ${mine.length ? `<h2 class="sh">我手上的 <span class="num">${mine.length}</span></h2><div class="slist">${mine.map(simpleCard).join('')}</div>` : ''}
-      ${pool.length ? `<h2 class="sh">可以接的 <span class="num">${pool.length}</span></h2><div class="slist">${pool.map(simpleCard).join('')}</div>` : ''}
-      ${!mine.length && !pool.length ? '<div class="card calm"><b>目前沒有工作</b></div>' : ''}
+      ${body}
     </div>`;
   $app.querySelectorAll('[data-href]').forEach((c) => {
     c.onclick = (e) => { if (!e.target.closest('a, button, select')) location.hash = c.dataset.href; };
   });
   $app.querySelectorAll('[data-claim]').forEach((b) => { b.onclick = () => claim(Number(b.dataset.claim), Number(b.dataset.v), b.dataset.step); });
   const byKey = new Map(r.items.map((i) => [i.key, i]));
-  $app.querySelectorAll('[data-back]').forEach((b) => { b.onclick = () => openReturnModal(byKey.get(b.dataset.back)); });
+  $app.querySelectorAll('[data-back]').forEach((b) => { b.onclick = () => openReturnModal(byKey.get(b.dataset.back), b.dataset.target); });
   $app.querySelectorAll('[data-done]').forEach((b) => {
     b.onclick = () => {
       const to = $app.querySelector(`[data-to="${CSS.escape(b.dataset.done)}"]`);
@@ -454,7 +457,7 @@ async function viewStaffRadar() {
     $app.querySelectorAll('.scard').forEach((c) => { c.hidden = !!q && !c.dataset.name.includes(q); });
     $app.querySelectorAll('.slist').forEach((l) => {
       const n = l.querySelectorAll('.scard:not([hidden])').length;
-      const h = l.previousElementSibling?.querySelector('.num');
+      const h = l.previousElementSibling?.querySelector?.('.num');
       if (h) h.textContent = n;
     });
   };
@@ -1002,8 +1005,16 @@ const assigneeSelect = (step, attrs, returning = false) => {
 const TARGET_TEXT = { cutout: '圖 → 美編', listing: '文案上架 → 上架人員', review: '審核 → 行銷', optimizing: '優化 → 設計師' };
 // 設計師（優化）退回固定交給審核的行銷，由行銷判斷要退給美編還是上架人員；最後審核退回固定交給設計師
 // 設計師前後都是審核（巧芸）：往前叫「退件」，往後叫「已完成送審」
-const backText = (step) => (step === 'optimizing' ? '← 退件' : '← 退回');
-const doneText = (step) => (step === 'optimizing' ? '已完成送審 →' : '完成 →');
+const backText = (step) => (step === 'optimizing' ? '← 退件' : step === 'mkt_check' ? '← 退回設計師' : '← 退回');
+const doneText = (step) => (step === 'optimizing' ? '已完成送審 →' : step === 'review' ? '推給設計師 →' : '完成 →');
+// 退回按鈕：審核直接分成「退回美編」「退回上架人員」，不用再選
+const backButtons = (step, attr) => {
+  if (step === 'review') return `<button class="btn danger" ${attr} data-target="cutout">← 退回美編</button><button class="btn danger" ${attr} data-target="listing">← 退回上架人員</button>`;
+  return returnTargets(step).length ? `<button class="btn danger" ${attr}>${backText(step)}</button>` : '';
+};
+// 設計師退件回到審核：不是一般審核，標成「設計師退件」
+const designerBack = (it) => it.step === 'review' && !!it.returned;
+const retNote = (n) => String(n || '').replace(/^【(審核|設計師退件)】\s*/, '');
 const returnTargets = (step) => step === 'optimizing' ? ['review'] : step === 'mkt_check' ? ['optimizing'] : FLOW.slice(0, Math.max(0, FLOW.indexOf(step)));
 
 // 做完動作後：在商品頁就回到今天要做，在清單就重新整理
@@ -1018,11 +1029,11 @@ function stepAction(it, action, extra) {
 }
 
 // 退回：選前面任何一步，寫原因；改好會直接回到你這一步
-function openReturnModal(it) {
-  const targets = returnTargets(it.step);
+function openReturnModal(it, fixed) {
+  const targets = fixed ? [fixed] : returnTargets(it.step);
   if (!targets.length) return toast('這一步前面沒有可以退回的步驟', true);
   openModal(`
-    <h3>${backText(it.step)}</h3>
+    <h3>${fixed ? `← 退回${fixed === 'cutout' ? '美編' : '上架人員'}` : backText(it.step)}</h3>
     <p class="muted">${esc(it.name)}：改好後會直接回到你這裡。</p>
     <div class="field"><span>退回哪一步</span>
       ${targets.length === 1 ? `<b>${esc(TARGET_TEXT[targets[0]] || stepLabel(targets[0]))}</b>` : ''}
@@ -1120,7 +1131,7 @@ function actionPanel(p) {
   const canReturn = returnTargets(step).length > 0;
   // 中間是自己這一步：往左退回上一步，往右完成交給下一步（行銷檢查往右就是完成）
   const foot = (btn, miss = '') => `<div class="flowbar">
-      <div class="fb-back">${canReturn ? `<button class="btn danger act" data-open-return>${backText(step)}</button>` : ''}</div>
+      <div class="fb-back">${canReturn ? backButtons(step, 'data-open-return').replace(/class="btn danger"/g, 'class="btn danger act"') : ''}</div>
       <div class="fb-cur"><b>${esc(stepLabel(step))}</b></div>
       <div class="fb-next">${assigneeSelect(p.return_to && p.return_to !== step ? p.return_to : NEXT_STEP[step], 'id="cp-to"')}${btn}</div>
     </div>
@@ -1164,8 +1175,7 @@ function actionPanel(p) {
       // 上架後審核：圖有問題退回美編，其他退回上架人員；通過才交給設計師
       return `<div class="card action mine">${head('審核')}
         <div class="row" style="margin:10px 0">${shop.replace('class="btn"', 'class="btn primary"')}</div>
-        <div class="muted" style="margin-bottom:6px">圖有問題 → 退回美編；其他問題 → 退回上架人員</div>
-        ${foot('<button class="btn go act" id="complete-btn">審核通過 → 優化</button>')}</div>`;
+        ${foot('<button class="btn go act" id="complete-btn">推給設計師 →</button>')}</div>`;
     }
     case 'mkt_check': {
       const lastOpt = [...p.stints].reverse().find((s) => s.step === 'optimizing' && s.end_note);
@@ -1385,8 +1395,9 @@ function bindProduct(p) {
 
 
   // 退回
-  const rb2 = $app.querySelector('[data-open-return]');
-  if (rb2 && cur) rb2.onclick = () => openReturnModal({ product_id: id, version: p.version, step: cur.step, name: p.name });
+  $app.querySelectorAll('[data-open-return]').forEach((rb2) => {
+    if (cur) rb2.onclick = () => openReturnModal({ product_id: id, version: p.version, step: cur.step, name: p.name }, rb2.dataset.target);
+  });
 
   // 插隊
   const rs = document.getElementById('rush-set');

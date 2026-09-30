@@ -760,7 +760,7 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params }) =>
       if (!to) throw new HttpError(400, before.length ? '請選要退回哪一步' : '這一步前面沒有可以退回的步驟');
       const updates = {};
       if (to === 'listing' && b.rename) updates.rename_pending = 1;
-      const label = byAdmin ? '管理員退回' : to === 'listing' ? (b.rename ? '文案・名稱要改' : '文案') : to === 'cutout' ? '圖' : STEP_LABEL[to];
+      const label = byAdmin ? '管理員退回' : to === 'review' ? '設計師退件' : to === 'listing' ? (b.rename ? '文案・名稱要改' : '文案') : to === 'cutout' ? '圖' : STEP_LABEL[to];
       const text = note ? `【${label}】${note}` : `【${label}】`;
       const t = now();
       const running = await openStint(db, id, to);
