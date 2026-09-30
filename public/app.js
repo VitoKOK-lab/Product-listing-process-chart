@@ -729,7 +729,7 @@ function laneRow(r) {
     const late = S.showTime && state === 'done' && c.level !== 'ok';
     return `<span class="node ${state} ${mine ? 'mine' : 'other'} ${late ? 'late' : ''} ${state === 'future' && c.held ? 'visited' : ''}" style="left:${at(i)}%" data-tip="${tip}" tabindex="0"></span>`;
   }).join('');
-  return `<div class="lane-row ${r.cells.some(isMineCell) ? 'row-mine' : ''}" data-href="#/p/${r.id}">
+  return `<div class="lane-row ${r.cells.some(isMineCell) ? 'row-mine' : ''}" data-href="#/p/${r.id}" data-name="${esc(r.name.toLowerCase())}">
     <div class="lane-name">${thumb(r.id, r.thumb, 'sm')}<div class="ln-text">${statusBadge(r)}${shopName(r.name, r.link)}</div></div>
     <div class="lane-mobile">${r.done ? stepChip('done') : r.cells.filter((c) => c.state === 'current').map((c) => `${stepChip(c.step)}<span class="${c.waiting ? 'muted' : ''}">${esc(c.waiting ? waitText(c.step) : member(c.holder_id)?.name ?? '')}</span>`).join('') || stepChip(r.step)}</div>
     <div class="lane">
@@ -793,6 +793,7 @@ async function viewOverview() {
       <h1>總表</h1><a class="btn small primary" href="#/new">＋ 新增商品</a>
       <div class="seg batch-seg">${filters.map(([k, l, n]) => `<button data-filter="${k}" class="${S.ovFilter === k ? 'on' : ''}">${esc(l)} <span class="mono">${n}</span></button>`).join('')}</div>
     </div>
+    <input type="search" id="ov-find" class="find" placeholder="搜尋商品名稱" value="${esc(S.ovFind || '')}" autocomplete="off">
     ${syncBar()}
     <div class="card lanes">
       <div class="lane-row lane-head">
@@ -807,7 +808,7 @@ async function viewOverview() {
     <div class="card ov-wrap">
       <table class="ov done-table">
         <thead><tr><th class="ov-name">商品</th><th>完成時間</th><th class="num">${S.showTime ? '跟團隊平均比' : ''}</th><th class="num">退件</th></tr></thead>
-        <tbody>${doneShown.map((r) => `<tr data-href="#/p/${r.id}">
+        <tbody>${done.map((r, i) => `<tr data-href="#/p/${r.id}" data-name="${esc(r.name.toLowerCase())}" ${i >= doneShown.length ? 'data-extra hidden' : ''}>
           <td class="ov-name"><div class="row" style="gap:8px;flex-wrap:nowrap">${thumb(r.id, r.thumb, 'sm')}${statusBadge(r)}${shopName(r.name, r.link)}</div></td>
           <td class="mono">${r.done_at ? fmtTime(r.done_at) : ''}${r.rush ? (r.rush.missed ? ' <span class="tag red">錯過插隊日</span>' : ' <span class="tag green">插隊準時</span>') : ''}</td>
           <td class="num">${S.showTime ? `<span class="var ${diffCls(r.diff)}">${esc(diffTxt(r.cells.some((x) => x.diff != null) ? r.diff : null))}</span>` : ''}</td>
@@ -824,6 +825,17 @@ async function viewOverview() {
   });
   const da = document.getElementById('done-all');
   if (da) da.onclick = () => { S.ovDoneAll = true; viewOverview(); };
+  // 搜尋：打字就篩選（已完成的也一起找），切頁回來保留
+  const find = document.getElementById('ov-find');
+  const applyFind = () => {
+    S.ovFind = find.value;
+    const q = find.value.trim().toLowerCase();
+    $app.querySelectorAll('.lane-row[data-name]').forEach((r) => { r.hidden = !!q && !r.dataset.name.includes(q); });
+    $app.querySelectorAll('.done-table tr[data-name]').forEach((r) => { r.hidden = q ? !r.dataset.name.includes(q) : r.hasAttribute('data-extra'); });
+    if (da) da.hidden = !!q;
+  };
+  find.oninput = applyFind;
+  if (find.value) applyFind();
   bindSyncBar();
 }
 
