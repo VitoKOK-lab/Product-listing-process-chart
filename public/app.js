@@ -390,7 +390,7 @@ function simpleCard(it) {
     ${thumb(it.product_id, it.thumb)}
     <div class="sc-main">
       <div class="sc-name">${esc(it.name)}</div>
-      <div class="sc-sub">${statusBadge(it)}${designerBack(it) ? '<span class="tag return">設計師退件</span>' : `${stepChip(it.step)}${it.returned ? '<span class="tag return">被退回</span>' : ''}`}${it.suggest ? '<span class="tag first">先做這件</span>' : ''}</div>
+      <div class="sc-sub">${statusBadge(it)}${it.legacy ? '<span class="tag" title="系統上線時匯入：已經上架的舊商品，直接從優化開始，不是誰退回的">舊品・直接優化</span>' : ''}${designerBack(it) ? '<span class="tag return">設計師退件</span>' : `${stepChip(it.step)}${it.returned ? '<span class="tag return">被退回</span>' : ''}`}${it.suggest ? '<span class="tag first">先做這件</span>' : ''}</div>
       ${retNote(it.returned?.note) ? `<div class="ret-note">${esc(retNote(it.returned.note))}</div>` : ''}
       ${it.memo ? `<div class="memo-note">📌 ${esc(it.memo)}</div>` : ''}
     </div>
@@ -695,6 +695,7 @@ function isMineCell(c) {
 }
 
 function cellTip(c) {
+  if (c.pre) return `${stepLabel(c.step)}・系統上線前就做完了`;
   if (c.held == null) {
     const who2 = c.state === 'current' ? (c.waiting ? waitText(c.step) : member(c.holder_id)?.name) : member(c.holders[c.holders.length - 1] ?? c.owner)?.name;
     return `${stepLabel(c.step)}・${who2 ?? (c.state === 'future' ? '還沒輪到' : '—')}${c.rounds > 1 ? `\n退回重做，第 ${c.rounds} 輪` : ''}`;
@@ -729,10 +730,10 @@ function laneRow(r) {
     }
     const state = i < cur || r.done ? 'done' : 'future';
     const late = S.showTime && state === 'done' && c.level !== 'ok';
-    return `<span class="node ${state} ${mine ? 'mine' : 'other'} ${late ? 'late' : ''} ${state === 'future' && c.held ? 'visited' : ''}" style="left:${at(i)}%" data-tip="${tip}" tabindex="0"></span>`;
+    return `<span class="node ${state} ${c.pre ? 'pre' : ''} ${mine ? 'mine' : 'other'} ${late ? 'late' : ''} ${state === 'future' && c.held ? 'visited' : ''}" style="left:${at(i)}%" data-tip="${tip}" tabindex="0"></span>`;
   }).join('');
   return `<div class="lane-row ${r.cells.some(isMineCell) ? 'row-mine' : ''}" data-href="#/p/${r.id}" data-name="${esc(r.name.toLowerCase())}">
-    <div class="lane-name">${thumb(r.id, r.thumb, 'sm')}<div class="ln-text">${statusBadge(r)}${shopName(r.name, r.link)}</div></div>
+    <div class="lane-name">${thumb(r.id, r.thumb, 'sm')}<div class="ln-text">${statusBadge(r)}${r.legacy ? '<span class="st st-old" title="系統上線時匯入：前面的步驟在上線前就做完了">舊品</span>' : ''}${shopName(r.name, r.link)}</div></div>
     <div class="lane-mobile">${r.done ? stepChip('done') : r.cells.filter((c) => c.state === 'current').map((c) => `${stepChip(c.step)}<span class="${c.waiting ? 'muted' : ''}">${esc(c.waiting ? waitText(c.step) : member(c.holder_id)?.name ?? '')}</span>`).join('') || stepChip(r.step)}</div>
     <div class="lane">
       <div class="rail" style="left:${at(0)}%;right:${100 - at(n - 1)}%"></div>

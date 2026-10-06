@@ -165,6 +165,7 @@ export function overviewRows({ products, allProducts, stints, now, cfg, settings
       const cell = {
         step, state, held, work, pool: round1(e?.pool || 0), rounds: e?.rounds || 0, holders: e?.holders || [],
         avg: avgs[step].avg, total_avg: avgs[step].total_avg, diff: null, level: 'ok', holder_id: null, waiting: false,
+        pre: state === 'done' && !e, // 沒有紀錄就走過了：系統上線前做完的
         parallel: !!open && step !== p.step, owner: step === 'mkt_check' || step === 'review' ? p.marketer_id ?? null : null,
       };
       if (open) {
@@ -188,6 +189,8 @@ export function overviewRows({ products, allProducts, stints, now, cfg, settings
       status_code: p.status_code || '', sheet_status: p.sheet_status || '', thumb: p.thumb_ver || 0,
       rush: rushInfo(p, now, cfg, settings), rush_date: p.rush_date ?? null, cells, diff: round1(diff), level,
       returns: returnsBy.get(p.id) || 0, done_at: p.done_at ?? null, marketer_id: p.marketer_id ?? null,
+      // 系統上線時匯入：前面的步驟是上線前做完的，不是在系統裡誰按的
+      legacy: Object.values(t || {}).some((e) => e?.imported),
     };
   });
   rows.sort((a, b) => comparePriority(a, b) || stepIdx(b.step) - stepIdx(a.step) || a.id - b.id);
@@ -238,7 +241,7 @@ export function buildRadar({ products, allProducts, stints, mentions, me, meRole
 
       level: c.level, group, tags, returned: r ? { note: r.note, by: r.by_id } : null, rush,
       status_code: p.status_code || '', rush_date: p.rush_date ?? null, thumb: p.thumb_ver || 0, version: p.version,
-      sl_url: p.sl_url || '', memo: p.memo || '', rename_pending: !!p.rename_pending, parallel: s.step !== p.step,
+      sl_url: p.sl_url || '', memo: p.memo || '', legacy: !!st?.imported, rename_pending: !!p.rename_pending, parallel: s.step !== p.step,
       sheet_row: p.sheet_row ?? null,
     });
   }

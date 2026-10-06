@@ -1138,3 +1138,5 @@ details.hint .guide ul { margin: 0; padding-left: 18px; line-height: 1.8; }
 /* 交代事項 */
 .memo-note { margin-top: 6px; font-size: 13px; background: var(--topaz-soft); color: var(--ink); border-radius: 12px; padding: 6px 10px; white-space: pre-wrap; }
 .memo-block textarea { width: 100%; min-height: 72px; }
+.st-old { background: #EEF0F3; color: #6B7280; }
+.node.pre { background: #fff !important; box-shadow: inset 0 0 0 2px #C9CBD6 !important; }
