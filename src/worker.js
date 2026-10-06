@@ -9,7 +9,7 @@ import { sheetRows, planSync, extractOgImage, normalizeLink, sheetKey } from './
 
 const SCHEMA_VERSION = '3';
 // 在 v3 之後加上的欄位：舊資料庫補上
-const ADDED_COLUMNS = { products: [['sheet_row', 'INTEGER'], ['rename_pending', 'INTEGER NOT NULL DEFAULT 0'], ['memo', "TEXT NOT NULL DEFAULT ''"]], photos: [['angle', 'TEXT']], members: [['can_sync', 'INTEGER NOT NULL DEFAULT 0']] };
+const ADDED_COLUMNS = { products: [['sheet_row', 'INTEGER'], ['rename_pending', 'INTEGER NOT NULL DEFAULT 0'], ['memo', "TEXT NOT NULL DEFAULT ''"], ['designer_id', 'INTEGER']], photos: [['angle', 'TEXT']], members: [['can_sync', 'INTEGER NOT NULL DEFAULT 0']] };
 
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS members (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, color TEXT NOT NULL,
@@ -275,6 +275,8 @@ async function holderFor(db, p, step, { returning = false } = {}) {
   const last = await db.prepare('SELECT member_id FROM stints WHERE product_id = ? AND step = ? AND member_id IS NOT NULL ORDER BY started_at DESC, id DESC LIMIT 1')
     .bind(p.id, step).first();
   if (last && await memberHasRole(db, last.member_id, STEP_ROLE[step])) return last.member_id;
+  // 新增時先指定好的設計師
+  if (step === 'optimizing' && await memberHasRole(db, p.designer_id, 'designer')) return p.designer_id;
   if (returning || step === 'optimizing') return soleMember(db, STEP_ROLE[step]); // 優化只有一位設計師就直接給他
   return null; // 第一次輪到：不預設給人，自己認領
 }
@@ -586,8 +588,11 @@ route('POST', '/api/products', async ({ db, env, request, me, settings }) => {
   }
   const t = now();
   const memo = String(b.memo ?? '').trim().slice(0, 2000); // 交代事項（選填）
-  const res = await db.prepare(`INSERT INTO products (name, link, sl_url, sheet_key, source, step, rush_date, memo, created_at, updated_at)
-    VALUES (?, ?, ?, ?, 'manual', 'cutout', ?, ?, ?, ?)`).bind(name, link, link, key, rush, memo, t, t).run();
+  // 優化先指定給誰（選填）：審核通過後直接到他手上
+  const designer = b.designer_id ? intId(b.designer_id, '設計師') : null;
+  if (designer && !(await memberHasRole(db, designer, 'designer'))) throw new HttpError(400, '此人不是設計師');
+  const res = await db.prepare(`INSERT INTO products (name, link, sl_url, sheet_key, source, step, rush_date, memo, designer_id, created_at, updated_at)
+    VALUES (?, ?, ?, ?, 'manual', 'cutout', ?, ?, ?, ?, ?)`).bind(name, link, link, key, rush, memo, designer, t, t).run();
   const id = res.meta.last_row_id;
   await db.batch([
     ...[['cutout', 'editor'], ['listing', 'lister']].map(([step, role]) => db.prepare(`INSERT INTO stints (product_id, step, member_id, role, started_at, start_reason, by_id)

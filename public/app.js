@@ -430,7 +430,9 @@ async function viewStaffRadar() {
   }
   $app.innerHTML = `
     <div data-view="radar" class="staff-home">
-      <div class="page-head"><h1>今天要做</h1></div>
+      <div class="page-head"><h1>今天要做</h1><span class="spacer"></span>
+        ${S.me.can_sync ? `<button class="btn small" id="sync-sheet" ${S.settings.sheet_api_url ? '' : 'disabled'}>同步 Excel</button><button class="btn small" id="sync-thumbs" ${S.settings.sheet_api_url ? '' : 'disabled'}>同步首圖</button>` : ''}
+        <a class="btn small primary" href="#/new">＋ 新增商品</a></div>
       <input type="search" id="find" class="find" placeholder="搜尋商品名稱" value="${esc(S.find || '')}" autocomplete="off">
       ${body}
     </div>`;
@@ -440,6 +442,8 @@ async function viewStaffRadar() {
   $app.querySelectorAll('[data-claim]').forEach((b) => { b.onclick = () => claim(Number(b.dataset.claim), Number(b.dataset.v), b.dataset.step); });
   const byKey = new Map(r.items.map((i) => [i.key, i]));
   $app.querySelectorAll('[data-back]').forEach((b) => { b.onclick = () => openReturnModal(byKey.get(b.dataset.back), b.dataset.target); });
+  const ss = document.getElementById('sync-sheet');
+  if (ss) { ss.onclick = () => syncSheet(false); document.getElementById('sync-thumbs').onclick = syncThumbs; }
   $app.querySelectorAll('[data-xfer]').forEach((b) => { b.onclick = () => openTransferModal(byKey.get(b.dataset.xfer)); });
   $app.querySelectorAll('[data-done]').forEach((b) => {
     b.onclick = () => {
@@ -661,12 +665,13 @@ function viewHelp(tab) {
 
 async function viewNew() {
   $app.innerHTML = `
-    <div class="page-head"><a href="#/overview" class="btn small">← 總表</a><h1>新增商品</h1></div>
+    <div class="page-head"><a href="#/${staff() ? 'radar' : 'overview'}" class="btn small">← ${staff() ? '今天要做' : '總表'}</a><h1>新增商品</h1></div>
     <form class="card section" id="new-form" style="max-width:680px">
       <p class="muted" style="margin-top:0">這裡是「廣告數據表」<b>以外</b>的商品。廣告要用的話，請自己手動加到廣告的 Excel；之後同步時，Excel 裡同一個網址會視為同一件，改用 Excel 的狀態和排序。</p>
       <label class="field"><span>商品名稱</span><input type="text" name="name" required maxlength="200"></label>
       <label class="field"><span>商品網址（Shopline 商品頁）</span><input type="url" name="link" required placeholder="https://"></label>
       <label class="field"><span>交代事項（選填）</span><textarea name="memo" placeholder="例：文案第二段價格要改成 1,380、主圖換成側面"></textarea></label>
+      ${hasRole('marketing') || S.me.is_admin ? `<label class="field"><span>優化指派給（選填）</span><select name="designer"><option value="">不指派（設計師自己認領）</option>${stepPeople('optimizing').map((m) => `<option value="${m.id}">${esc(m.name)}</option>`).join('')}</select></label>` : ''}
       <label class="rename-chk"><input type="checkbox" name="rush"> 急件</label>
       <label class="field" id="new-rush-date" hidden><span>完成日期（最早明天）</span><input type="date" name="rush_date" min="${tomorrowYmd()}" style="max-width:200px"></label>
       <p class="muted">建立後首圖會自動抓進來，接著跟其他商品一樣：美編做圖、上架人員寫文案上架。</p>
@@ -678,7 +683,7 @@ async function viewNew() {
     e.preventDefault();
     act(async () => {
       try {
-        const r = await api('POST', '/api/products', { name: f.name.value, link: f.link.value.trim(), rush: f.rush.checked, rush_date: f.rush_date.value, memo: f.memo.value });
+        const r = await api('POST', '/api/products', { name: f.name.value, link: f.link.value.trim(), rush: f.rush.checked, rush_date: f.rush_date.value, memo: f.memo.value, designer_id: Number(f.designer?.value) || null });
         f.querySelectorAll('[data-dirty]').forEach((el) => delete el.dataset.dirty);
         toast(r.thumb ? '已建立，首圖已抓到' : '已建立（首圖沒抓到，之後由管理員或設計師按「同步首圖」再抓）');
         location.hash = `#/p/${r.id}`;
@@ -795,11 +800,11 @@ async function viewOverview() {
   const doneShown = S.ovDoneAll ? done : done.slice(0, 30);
   $app.innerHTML = `
     <div class="page-head">
-      <h1>總表</h1><a class="btn small primary" href="#/new">＋ 新增商品</a>
+      <h1>總表</h1>${staff() ? '' : '<a class="btn small primary" href="#/new">＋ 新增商品</a>'}
       <div class="seg batch-seg">${filters.map(([k, l, n]) => `<button data-filter="${k}" class="${S.ovFilter === k ? 'on' : ''}">${esc(l)} <span class="mono">${n}</span></button>`).join('')}</div>
     </div>
     <input type="search" id="ov-find" class="find" placeholder="搜尋商品名稱" value="${esc(S.ovFind || '')}" autocomplete="off">
-    ${syncBar()}
+    ${staff() ? '' : syncBar()}
     <div class="card lanes">
       <div class="lane-row lane-head">
         <div class="lane-name">商品<span class="muted">（名稱連到 Shopline，點這列看詳情）</span></div>
@@ -825,7 +830,8 @@ async function viewOverview() {
     ${S.showTime ? '' : '<!--'}<p class="muted" style="margin-top:12px">做圖和文案同時開始。跟團隊平均比的是「認領後到完成」的工作時間；沒人接的時間另外記，滑鼠移到圓點可以看。平均只拿走完這一步的商品來算，至少 3 件才比。只算上班時間。</p>${S.showTime ? '' : '-->'}`;
   $app.querySelectorAll('[data-filter]').forEach((b) => { b.onclick = () => { S.ovFilter = b.dataset.filter; viewOverview(); }; });
   $app.querySelectorAll('[data-sort]').forEach((b) => { b.onclick = () => { S.ovSort = b.dataset.sort; viewOverview(); }; });
-  $app.querySelectorAll('[data-href]').forEach((row) => {
+  // 員工的總表只給看：點列不進商品頁（要操作到今天要做）
+  if (!staff()) $app.querySelectorAll('[data-href]').forEach((row) => {
     row.onclick = (e) => { if (!e.target.closest('a, button, select')) location.hash = row.dataset.href; };
   });
   const da = document.getElementById('done-all');
