@@ -396,6 +396,7 @@ function simpleCard(it) {
     </div>
     <div class="sc-acts">
       ${backButtons(it.step, `data-back="${esc(it.key)}"`)}
+      ${it.holder_id === S.me.id && stepPeople(it.step).length > 1 ? `<button class="btn" data-xfer="${esc(it.key)}">轉給…</button>` : ''}
       ${it.claimable ? `<button class="btn" data-claim="${it.product_id}" data-v="${it.version}" data-step="${it.step}">我來做</button>` : ''}
       ${['optimizing', 'listing', 'review'].includes(it.step) ? assigneeSelect(NEXT_STEP[it.step], `data-to="${esc(it.key)}"`) : ''}
       <button class="btn primary" data-done="${esc(it.key)}">${doneText(it.step)}</button>
@@ -439,6 +440,7 @@ async function viewStaffRadar() {
   $app.querySelectorAll('[data-claim]').forEach((b) => { b.onclick = () => claim(Number(b.dataset.claim), Number(b.dataset.v), b.dataset.step); });
   const byKey = new Map(r.items.map((i) => [i.key, i]));
   $app.querySelectorAll('[data-back]').forEach((b) => { b.onclick = () => openReturnModal(byKey.get(b.dataset.back), b.dataset.target); });
+  $app.querySelectorAll('[data-xfer]').forEach((b) => { b.onclick = () => openTransferModal(byKey.get(b.dataset.xfer)); });
   $app.querySelectorAll('[data-done]').forEach((b) => {
     b.onclick = () => {
       const to = $app.querySelector(`[data-to="${CSS.escape(b.dataset.done)}"]`);
@@ -1085,6 +1087,27 @@ function openReturnModal(it, fixed) {
 }
 
 // 完成：按一下就結束，直接交給下一步（網址、改了什麼都是選填，在商品頁才填）
+// 不是我的工作：轉給同職務的另一個人（先選人，再按確定）
+function openTransferModal(it) {
+  const others = stepPeople(it.step).filter((m) => m.id !== S.me.id);
+  openModal(`
+    <h3>轉給誰</h3>
+    <p class="muted">${esc(it.name)}・${esc(stepLabel(it.step))}</p>
+    <div class="hour-pick">${others.map((m) => `<label><input type="radio" name="xf" value="${m.id}">${esc(m.name)}</label>`).join('')}</div>
+    <div class="acts"><button class="btn" data-close>取消</button><button class="btn primary" id="xf-go" disabled>確定轉給他</button></div>`,
+  (m, close) => {
+    m.addEventListener('change', () => {
+      m.querySelectorAll('.hour-pick label').forEach((l) => l.classList.toggle('on', l.querySelector('input').checked));
+      m.querySelector('#xf-go').disabled = !m.querySelector('[name=xf]:checked');
+    });
+    m.querySelector('#xf-go').onclick = async () => {
+      const to = Number(m.querySelector('[name=xf]:checked').value);
+      const ok = await stepAction(it, 'reassign', { member_id: to });
+      if (ok) { close(); afterStep(`已轉給 ${member(to)?.name ?? ''}`); }
+    };
+  });
+}
+
 // 往下一步前再確認一次（退回本來就會先跳視窗，也是兩步）
 function confirmStep(name, step, go) {
   const final = step === 'mkt_check';

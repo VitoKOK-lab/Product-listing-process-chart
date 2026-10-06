@@ -805,7 +805,7 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params }) =>
       break;
     }
     case 'reassign': {
-      if (!me.is_admin) throw new HttpError(403, '只有管理員可以改派');
+      // 誰都可以轉給同職務的人（例如 Jessica 轉給夏麗君）
       need();
       const to = b.member_id ? intId(b.member_id, '成員') : null;
       if (to && !(await memberHasRole(db, to, open.role))) throw new HttpError(400, `此人不是「${ROLES[open.role]}」`);
