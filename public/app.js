@@ -1005,7 +1005,7 @@ const soleFor = (step, returning) => {
 function assigneeOptions(step, returning = false) {
   const one = soleFor(step, returning);
   if (one) return `<option value="${one.id}" selected>${esc(one.name)}</option>`;
-  return `<option value="">不指定（誰看到誰接）</option>${stepPeople(step).map((m) => `<option value="${m.id}">${esc(m.name)}</option>`).join('')}`;
+  return `<option value="">${returning ? '交回原本做的人' : '不指定（誰看到誰接）'}</option>${stepPeople(step).map((m) => `<option value="${m.id}">${esc(m.name)}</option>`).join('')}`;
 }
 const assigneeSelect = (step, attrs, returning = false) => {
   if (!step || step === 'done') return '';

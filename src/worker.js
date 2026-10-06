@@ -686,7 +686,9 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params }) =>
   let stmts;
 
   // 沒領就直接完成或退回：自動記在按的人名下（退回、改好交回時才找得到人）
-  if ((b.action === 'complete' || b.action === 'return') && open && !open.member_id) {
+  // 別人手上的被我做完（例如夏麗君幫忙優化）：也改記在我名下；管理員代按不改名
+  const takeOver = open && open.member_id && open.member_id !== me.id && !me.is_admin;
+  if ((b.action === 'complete' || b.action === 'return') && open && (!open.member_id || takeOver)) {
     const upd = ['open', 'review', 'mkt_check'].includes(open.step) ? { marketer_id: me.id } : {};
     await db.batch(handOver(db, p, open, me, { member: me.id, reason: 'claim', updates: upd, action: 'claim', detail: STEP_LABEL[open.step] }));
     Object.assign(p, await getProduct(db, id));
