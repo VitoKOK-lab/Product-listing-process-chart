@@ -9,7 +9,7 @@ import { sheetRows, planSync, extractOgImage, normalizeLink, sheetKey } from './
 
 const SCHEMA_VERSION = '3';
 // 在 v3 之後加上的欄位：舊資料庫補上
-const ADDED_COLUMNS = { products: [['sheet_row', 'INTEGER'], ['rename_pending', 'INTEGER NOT NULL DEFAULT 0'], ['memo', "TEXT NOT NULL DEFAULT ''"]], photos: [['angle', 'TEXT']] };
+const ADDED_COLUMNS = { products: [['sheet_row', 'INTEGER'], ['rename_pending', 'INTEGER NOT NULL DEFAULT 0'], ['memo', "TEXT NOT NULL DEFAULT ''"]], photos: [['angle', 'TEXT']], members: [['can_sync', 'INTEGER NOT NULL DEFAULT 0']] };
 
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS members (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, color TEXT NOT NULL,
@@ -191,7 +191,7 @@ async function currentMember(db, request) {
   const token = cookie(request, 'dt');
   if (!token || !/^[0-9a-f]{64}$/.test(token)) return null;
   const h = await sha256(token);
-  const m = await db.prepare(`SELECT id, name, color, is_admin FROM members WHERE active = 1
+  const m = await db.prepare(`SELECT id, name, color, is_admin, can_sync FROM members WHERE active = 1
     AND (device_hash = ? OR id = (SELECT member_id FROM member_devices WHERE hash = ?))`).bind(h, h).first();
   if (!m) return null;
   m.roles = await memberRoles(db, m.id);
@@ -203,7 +203,7 @@ async function viewAs(db, request, me) {
   const want = Number(request.headers.get('x-view-as'));
   if (!me?.is_admin || !Number.isInteger(want) || want <= 0 || want === me.id) return me;
   if (request.method !== 'GET') throw new HttpError(403, '切換視角時只能看、不能操作，請先回到管理員');
-  const m = await db.prepare('SELECT id, name, color, is_admin FROM members WHERE id = ? AND active = 1').bind(want).first();
+  const m = await db.prepare('SELECT id, name, color, is_admin, can_sync FROM members WHERE id = ? AND active = 1').bind(want).first();
   if (!m) return me;
   m.roles = await memberRoles(db, m.id);
   m.viewing_as = true;
@@ -215,8 +215,9 @@ async function viewAs(db, request, me) {
 const requireMe = (me) => { if (!me) throw new HttpError(401, '請先選擇你的名字登入'); return me; };
 const requireAdmin = (me) => { requireMe(me); if (!me.is_admin) throw new HttpError(403, '只有管理員可以執行這個操作'); return me; };
 const hasRole = (me, role) => me.roles.includes(role);
-const canSync = (me) => !!me && (me.is_admin || hasRole(me, 'designer'));
-const requireSync = (me) => { requireMe(me); if (!canSync(me)) throw new HttpError(403, '只有設計師和管理員可以同步'); };
+// 同步 Excel／首圖：管理員，加上個別開放的人（目前只有 Jessica）
+const canSync = (me) => !!me && (me.is_admin || !!me.can_sync);
+const requireSync = (me) => { requireMe(me); if (!canSync(me)) throw new HttpError(403, '只有 Jessica 和管理員可以同步'); };
 const isMkt = (me) => me.is_admin || hasRole(me, 'marketing');
 
 function log(db, memberId, action, productId = null, detail = '') {
