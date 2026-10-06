@@ -1085,8 +1085,20 @@ function openReturnModal(it, fixed) {
 }
 
 // 完成：按一下就結束，直接交給下一步（網址、改了什麼都是選填，在商品頁才填）
+// 往下一步前再確認一次（退回本來就會先跳視窗，也是兩步）
+function confirmStep(name, step, go) {
+  const final = step === 'mkt_check';
+  const nx = final ? '結案完成' : stepLabel(NEXT_STEP[step]);
+  openModal(`
+    <h3>${final ? '確定結案？' : '確定完成這一步？'}</h3>
+    <p>${esc(name)}</p>
+    <p class="muted">${esc(stepLabel(step))} → ${esc(nx)}</p>
+    <div class="acts"><button class="btn" data-close>取消</button><button class="btn primary" id="cf-go">確定</button></div>`,
+  (m, close) => { m.querySelector('#cf-go').onclick = () => { close(); go(); }; });
+}
+
 function openCompleteModal(it, assignee = null) {
-  stepAction(it, 'complete', assignee ? { assignee } : {}).then((ok) => ok && afterStep(it.step === 'mkt_check' ? '審核通過，已完成' : it.step === 'review' ? '審核通過，交給設計師' : '已完成，交給下一步'));
+  confirmStep(it.name, it.step, () => stepAction(it, 'complete', assignee ? { assignee } : {}).then((ok) => ok && afterStep(it.step === 'mkt_check' ? '審核通過，已完成' : it.step === 'review' ? '審核通過，交給設計師' : '已完成，交給下一步')));
 }
 
 
@@ -1420,7 +1432,7 @@ function bindProduct(p) {
       const extra = slUrl ? { sl_url: slUrl.value.trim() } : optNote ? { note: optNote.value.trim() } : {};
       const to = Number(document.getElementById('cp-to')?.value) || null;
       if (to) extra.assignee = to;
-      doAction('complete', extra, cur.step === 'mkt_check' ? '審核通過，已完成' : `已交給 ${nextHint(p, cur.step)}`);
+      confirmStep(p.name, cur.step, () => doAction('complete', extra, cur.step === 'mkt_check' ? '審核通過，已完成' : `已交給 ${nextHint(p, cur.step)}`));
     };
   }
 
