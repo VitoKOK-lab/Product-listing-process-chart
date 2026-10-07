@@ -197,6 +197,14 @@ test('已停止／已更名失效：已有的下架，沒有的不建立', () =>
   assert.deepEqual(plan.delist, [1]);
 });
 
+test('Excel 已停止的舊列跟手動新增的商品同網址：不改名、不下架', () => {
+  const existing = [{ id: 7, sheet_key: 'url:https://s.tw/p/blue', name: '倫敦藍拓帕', link: 'https://s.tw/p/blue', sheet_status: '', status_code: '', source: 'manual', sheet_row: null }];
+  const rows = sheetRows([{ status: '已停止', name: '茶晶切面手鍊', link: 'https://s.tw/p/blue' }, { status: '投放中', name: '別的', link: 'https://s.tw/p/o' }]);
+  const plan = planSync(existing, rows);
+  assert.deepEqual(plan.updates, []);
+  assert.deepEqual(plan.delist, []);
+});
+
 test('去背從試算表最下面往上做；其他依優先序、試算表由上往下', () => {
   const cut = [{ step: 'cutout', sheet_row: 3, started_at: 0 }, { step: 'cutout', sheet_row: 9, started_at: 0 }, { step: 'cutout', sheet_row: null, started_at: 0 }];
   assert.deepEqual(cut.sort(workOrder).map((x) => x.sheet_row), [9, 3, null]);

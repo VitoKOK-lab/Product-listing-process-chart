@@ -577,8 +577,16 @@ route('POST', '/api/products', async ({ db, env, request, me, settings }) => {
     if (rush <= localYmd(now(), cfgOf(settings))) throw new HttpError(400, '完成日期最早只能選明天');
   }
   const key = sheetKey(name, link);
-  const dup = await db.prepare(`SELECT id, name FROM products WHERE deleted_at IS NULL AND (sheet_key = ?
+  let dup = await db.prepare(`SELECT id, name, delisted_at FROM products WHERE deleted_at IS NULL AND (sheet_key = ?
     OR id = (SELECT product_id FROM product_aliases WHERE key = ?))`).bind(key, key).first();
+  if (dup?.delisted_at) {
+    // 同網址的是已下架（Excel 已停止）的舊資料：讓出網址，照樣新增
+    await db.batch([
+      db.prepare('UPDATE products SET sheet_key = NULL WHERE id = ?').bind(dup.id),
+      db.prepare('DELETE FROM product_aliases WHERE key = ?').bind(key),
+    ]);
+    dup = null;
+  }
   if (dup) {
     // 告訴他這件現在在哪一步、誰手上
     const at = await db.prepare(`SELECT s.step, m.name FROM stints s LEFT JOIN members m ON m.id = s.member_id

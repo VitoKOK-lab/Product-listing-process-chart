@@ -66,6 +66,8 @@ export function planSync(existing, rows, aliases = []) {
     const p = byKey.get(r.key);
     if (!p) { later.push(r); continue; }
     if (p.deleted_at) continue; // 被管理員刪除的不動
+    // Excel 裡已停止的舊列，剛好跟手動新增的商品同網址：不動手動新增的那件
+    if (inactive && p.source === 'manual' && !p.delisted_at) continue;
     if (!inactive) seen.add(p.id);
     if (p.delisted_at && !inactive) plan.restore.push({ id: p.id, row: r });
     if (p.name !== r.name || (p.link || '') !== r.link || (p.sheet_status || '') !== r.status || (p.status_code || '') !== r.code
