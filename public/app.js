@@ -267,6 +267,23 @@ async function refresh() {
   await render();
 }
 
+// 程式有更新：頁面開著不關的人（手機、沒關的分頁）也會自動換成新版，不用手動重新整理
+let codeStamp = null;
+async function readCodeStamp() {
+  try {
+    const tags = await Promise.all(['/app.js', '/style.css'].map(async (u) => (await fetch(u, { method: 'HEAD', cache: 'no-store' })).headers.get('etag')));
+    return tags.every(Boolean) ? tags.join('|') : null;
+  } catch { return null; }
+}
+async function checkNewCode() {
+  const now = await readCodeStamp();
+  if (!now) return;
+  if (codeStamp === null) { codeStamp = now; return; }
+  if (now !== codeStamp && !isBusy()) location.reload();
+}
+readCodeStamp().then((x) => { if (codeStamp === null) codeStamp = x; });
+setInterval(checkNewCode, 60000);
+
 setInterval(async () => {
   if (!S.me || document.hidden) return;
   try {
@@ -278,7 +295,7 @@ setInterval(async () => {
   } catch { /* 離線橫幅已處理 */ }
 }, POLL_MS);
 
-document.addEventListener('visibilitychange', () => { if (!document.hidden && S.me && !isBusy()) refresh().catch(() => {}); });
+document.addEventListener('visibilitychange', () => { if (!document.hidden) checkNewCode(); if (!document.hidden && S.me && !isBusy()) refresh().catch(() => {}); });
 window.addEventListener('online', () => { if (S.me) refresh().catch(() => {}); });
 
 // ---------- login ----------
