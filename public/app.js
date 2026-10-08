@@ -407,7 +407,7 @@ function simpleCard(it) {
     ${thumb(it.product_id, it.thumb)}
     <div class="sc-main">
       <div class="sc-name">${esc(it.name)}</div>
-      <div class="sc-sub">${statusBadge(it)}${it.legacy ? '<span class="tag" title="已經上架的商品：跳過做圖與文案，直接從優化開始，不是誰退回的">直接優化</span>' : ''}${designerBack(it) ? '<span class="tag return">設計師退件</span>' : `${stepChip(it.step)}${it.returned ? '<span class="tag return">被退回</span>' : ''}`}${it.suggest ? '<span class="tag first">先做這件</span>' : ''}</div>
+      <div class="sc-sub">${statusBadge(it)}${it.legacy ? '<span class="tag" title="已經上架的商品：跳過做圖與文案，直接從優化開始，不是誰退回的">直接優化</span>' : ''}${stepChip(it.step)}${it.returned ? `<span class="tag return">${designerBack(it) ? '設計師退件' : '被退回'}</span>` : ''}${it.suggest ? '<span class="tag first">先做這件</span>' : ''}</div>
       ${retNote(it.returned?.note) ? `<div class="ret-note">${esc(retNote(it.returned.note))}</div>` : ''}
       ${it.memo ? `<div class="memo-note">📌 ${esc(it.memo)}</div>` : ''}
     </div>
@@ -688,7 +688,7 @@ async function viewNew() {
       <label class="field"><span>商品名稱</span><input type="text" name="name" required maxlength="200"></label>
       <label class="field"><span>商品網址（Shopline 商品頁）</span><input type="url" name="link" required placeholder="https://"></label>
       <label class="field"><span>交代事項（選填）</span><textarea name="memo" placeholder="例：文案第二段價格要改成 1,380、主圖換成側面"></textarea></label>
-      <label class="rename-chk"><input type="checkbox" name="direct"> 已經上架，直接優化（跳過做圖、文案、審核）</label>
+      <label class="rename-chk"><input type="checkbox" name="direct" checked> 已經有網址（圖和上架都完成了），直接給設計師優化。沒完成的請取消勾選，從做圖、文案開始</label>
       ${hasRole('marketing') || S.me.is_admin ? `<label class="field"><span>優化指派給（選填）</span><select name="designer"><option value="">不指派（設計師自己認領）</option>${stepPeople('optimizing').map((m) => `<option value="${m.id}">${esc(m.name)}</option>`).join('')}</select></label>` : ''}
       <label class="rename-chk"><input type="checkbox" name="rush"> 急件</label>
       <label class="field" id="new-rush-date" hidden><span>完成日期（最早明天）</span><input type="date" name="rush_date" min="${tomorrowYmd()}" style="max-width:200px"></label>
@@ -1041,19 +1041,19 @@ const assigneeSelect = (step, attrs, returning = false) => {
 };
 
 const TARGET_TEXT = { cutout: '圖 → 美編', listing: '文案上架 → 上架人員', review: '審核 → 行銷', optimizing: '優化 → 設計師' };
-// 設計師（優化）退回固定交給審核的行銷，由行銷判斷要退給美編還是上架人員；最後審核退回固定交給設計師
+// 設計師（優化）可退給某美編或某上架人員，他們做完先跳給行銷檢查；最後審核退回固定交給設計師
 // 設計師前後都是審核（巧芸）：往前叫「退件」，往後叫「已完成送審」
 const backText = (step) => (step === 'optimizing' ? '← 退件' : step === 'mkt_check' ? '← 退回設計師' : '← 退回');
 const doneText = (step) => (step === 'optimizing' ? '已完成送審 →' : step === 'review' ? '推給設計師 →' : '完成 →');
 // 退回按鈕：審核直接分成「退回美編」「退回上架人員」，不用再選
 const backButtons = (step, attr) => {
-  if (step === 'review') return `<button class="btn danger" ${attr} data-target="cutout">← 退回美編</button><button class="btn danger" ${attr} data-target="listing">← 退回上架人員</button>`;
+  if (step === 'review' || step === 'optimizing') return `<button class="btn danger" ${attr} data-target="cutout">← 退回美編</button><button class="btn danger" ${attr} data-target="listing">← 退回上架人員</button>`;
   return returnTargets(step).length ? `<button class="btn danger" ${attr}>${backText(step)}</button>` : '';
 };
 // 設計師退件回到審核：不是一般審核，標成「設計師退件」
-const designerBack = (it) => it.step === 'review' && !!it.returned;
+const designerBack = (it) => String(it.returned?.note || '').startsWith('【設計師退件】');
 const retNote = (n) => String(n || '').replace(/^【(審核|設計師退件)】\s*/, '');
-const returnTargets = (step) => step === 'optimizing' ? ['review'] : step === 'mkt_check' ? ['optimizing'] : FLOW.slice(0, Math.max(0, FLOW.indexOf(step)));
+const returnTargets = (step) => step === 'optimizing' ? ['cutout', 'listing'] : step === 'mkt_check' ? ['optimizing'] : FLOW.slice(0, Math.max(0, FLOW.indexOf(step)));
 
 // 做完動作後：在商品頁就回到今天要做，在清單就重新整理
 function afterStep(msg) {
@@ -1072,7 +1072,7 @@ function openReturnModal(it, fixed) {
   if (!targets.length) return toast('這一步前面沒有可以退回的步驟', true);
   openModal(`
     <h3>${fixed ? `← 退回${fixed === 'cutout' ? '美編' : '上架人員'}` : backText(it.step)}</h3>
-    <p class="muted">${esc(it.name)}：改好後會直接回到你這裡。</p>
+    <p class="muted">${esc(it.name)}：${it.step === 'optimizing' ? '他們做完會先交給行銷檢查，通過後再回到設計師。' : '改好後會直接回到你這裡。'}</p>
     <div class="field"><span>退回哪一步</span>
       ${targets.length === 1 ? `<b>${esc(TARGET_TEXT[targets[0]] || stepLabel(targets[0]))}</b>` : ''}
       <div class="hour-pick" ${targets.length === 1 ? 'hidden' : ''}>${targets.map((t) => `<label class="${targets.length === 1 ? 'on' : ''}"><input type="radio" name="rt" value="${t}" ${targets.length === 1 ? 'checked' : ''}>${esc(TARGET_TEXT[t] || stepLabel(t))}</label>`).join('')}</div></div>

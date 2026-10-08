@@ -782,13 +782,13 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params }) =>
       need();
       const from = open.step;
       const note = String(b.note ?? '').trim().slice(0, 2000); // 選填
-      // 優化退回固定交給審核（行銷）；最後審核退回固定交給設計師
-      const before = from === 'optimizing' ? ['review'] : from === 'mkt_check' ? ['optimizing'] : FLOW.slice(0, Math.max(0, FLOW.indexOf(from)));
+      // 設計師有意見：退給某美編或某上架人員，他們做完一樣先跳給行銷檢查；最後審核退回固定交給設計師
+      const before = from === 'optimizing' ? ['cutout', 'listing'] : from === 'mkt_check' ? ['optimizing'] : FLOW.slice(0, Math.max(0, FLOW.indexOf(from)));
       const to = before.includes(b.target) ? b.target : null;
       if (!to) throw new HttpError(400, before.length ? '請選要退回哪一步' : '這一步前面沒有可以退回的步驟');
       const updates = {};
       if (to === 'listing' && b.rename) updates.rename_pending = 1;
-      const label = byAdmin ? '管理員退回' : to === 'review' ? '設計師退件' : to === 'listing' ? (b.rename ? '文案・名稱要改' : '文案') : to === 'cutout' ? '圖' : STEP_LABEL[to];
+      const label = byAdmin ? '管理員退回' : from === 'optimizing' ? '設計師退件' : to === 'listing' ? (b.rename ? '文案・名稱要改' : '文案') : to === 'cutout' ? '圖' : STEP_LABEL[to];
       const text = note ? `【${label}】${note}` : `【${label}】`;
       const t = now();
       const running = await openStint(db, id, to);
@@ -808,7 +808,7 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params }) =>
         ...transition(db, p, open, me, {
           endReason: 'return', to, member, skipStint: !!running, startReason: 'return', note: text,
           // 改好後直接交回退回的人這一步
-          updates: { ...updates, return_to: from },
+          updates: { ...updates, return_to: from === 'optimizing' ? 'review' : from },
           action: 'return', detail: `${STEP_LABEL[from]} → ${STEP_LABEL[to]}${running ? '（還在做）' : ''}：【${label}】${note.slice(0, 60)}`,
         }),
         ...nudge,
