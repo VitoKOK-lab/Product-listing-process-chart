@@ -599,12 +599,17 @@ route('POST', '/api/products', async ({ db, env, request, me, settings }) => {
   // 優化先指定給誰（選填）：審核通過後直接到他手上
   const designer = b.designer_id ? intId(b.designer_id, '設計師') : null;
   if (designer && !(await memberHasRole(db, designer, 'designer'))) throw new HttpError(400, '此人不是設計師');
+  // 已經上架的商品：跳過做圖、文案、審核，直接從優化開始（指定的設計師直接拿到）
+  const direct = !!b.direct;
   const res = await db.prepare(`INSERT INTO products (name, link, sl_url, sheet_key, source, step, rush_date, memo, designer_id, created_at, updated_at)
-    VALUES (?, ?, ?, ?, 'manual', 'cutout', ?, ?, ?, ?, ?)`).bind(name, link, link, key, rush, memo, designer, t, t).run();
+    VALUES (?, ?, ?, ?, 'manual', ?, ?, ?, ?, ?, ?)`).bind(name, link, link, key, direct ? 'optimizing' : 'cutout', rush, memo, designer, t, t).run();
   const id = res.meta.last_row_id;
   await db.batch([
-    ...[['cutout', 'editor'], ['listing', 'lister']].map(([step, role]) => db.prepare(`INSERT INTO stints (product_id, step, member_id, role, started_at, start_reason, by_id)
-      VALUES (?, ?, NULL, ?, ?, 'create', ?)`).bind(id, step, role, t, me.id)),
+    ...(direct
+      ? [db.prepare(`INSERT INTO stints (product_id, step, member_id, role, started_at, start_reason, by_id)
+          VALUES (?, 'optimizing', ?, 'designer', ?, 'import', ?)`).bind(id, designer, t, me.id)]
+      : [['cutout', 'editor'], ['listing', 'lister']].map(([step, role]) => db.prepare(`INSERT INTO stints (product_id, step, member_id, role, started_at, start_reason, by_id)
+          VALUES (?, ?, NULL, ?, ?, 'create', ?)`).bind(id, step, role, t, me.id))).flat(),
     log(db, me.id, 'product_add', id, name),
   ]);
   const thumb = await fetchThumb(env, { id, link, thumb_src: null, thumb_ver: 0 });

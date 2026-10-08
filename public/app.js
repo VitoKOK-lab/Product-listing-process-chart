@@ -407,7 +407,7 @@ function simpleCard(it) {
     ${thumb(it.product_id, it.thumb)}
     <div class="sc-main">
       <div class="sc-name">${esc(it.name)}</div>
-      <div class="sc-sub">${statusBadge(it)}${it.legacy ? '<span class="tag" title="系統上線時匯入：已經上架的舊商品，直接從優化開始，不是誰退回的">舊品・直接優化</span>' : ''}${designerBack(it) ? '<span class="tag return">設計師退件</span>' : `${stepChip(it.step)}${it.returned ? '<span class="tag return">被退回</span>' : ''}`}${it.suggest ? '<span class="tag first">先做這件</span>' : ''}</div>
+      <div class="sc-sub">${statusBadge(it)}${it.legacy ? '<span class="tag" title="已經上架的商品：跳過做圖與文案，直接從優化開始，不是誰退回的">直接優化</span>' : ''}${designerBack(it) ? '<span class="tag return">設計師退件</span>' : `${stepChip(it.step)}${it.returned ? '<span class="tag return">被退回</span>' : ''}`}${it.suggest ? '<span class="tag first">先做這件</span>' : ''}</div>
       ${retNote(it.returned?.note) ? `<div class="ret-note">${esc(retNote(it.returned.note))}</div>` : ''}
       ${it.memo ? `<div class="memo-note">📌 ${esc(it.memo)}</div>` : ''}
     </div>
@@ -688,6 +688,7 @@ async function viewNew() {
       <label class="field"><span>商品名稱</span><input type="text" name="name" required maxlength="200"></label>
       <label class="field"><span>商品網址（Shopline 商品頁）</span><input type="url" name="link" required placeholder="https://"></label>
       <label class="field"><span>交代事項（選填）</span><textarea name="memo" placeholder="例：文案第二段價格要改成 1,380、主圖換成側面"></textarea></label>
+      <label class="rename-chk"><input type="checkbox" name="direct"> 已經上架，直接優化（跳過做圖、文案、審核）</label>
       ${hasRole('marketing') || S.me.is_admin ? `<label class="field"><span>優化指派給（選填）</span><select name="designer"><option value="">不指派（設計師自己認領）</option>${stepPeople('optimizing').map((m) => `<option value="${m.id}">${esc(m.name)}</option>`).join('')}</select></label>` : ''}
       <label class="rename-chk"><input type="checkbox" name="rush"> 急件</label>
       <label class="field" id="new-rush-date" hidden><span>完成日期（最早明天）</span><input type="date" name="rush_date" min="${tomorrowYmd()}" style="max-width:200px"></label>
@@ -700,7 +701,7 @@ async function viewNew() {
     e.preventDefault();
     act(async () => {
       try {
-        const r = await api('POST', '/api/products', { name: f.name.value, link: f.link.value.trim(), rush: f.rush.checked, rush_date: f.rush_date.value, memo: f.memo.value, designer_id: Number(f.designer?.value) || null });
+        const r = await api('POST', '/api/products', { name: f.name.value, link: f.link.value.trim(), rush: f.rush.checked, rush_date: f.rush_date.value, memo: f.memo.value, designer_id: Number(f.designer?.value) || null, direct: f.direct.checked });
         f.querySelectorAll('[data-dirty]').forEach((el) => delete el.dataset.dirty);
         toast(r.thumb ? '已建立，首圖已抓到' : '已建立（首圖沒抓到，之後由管理員或設計師按「同步首圖」再抓）');
         location.hash = `#/p/${r.id}`;
@@ -757,7 +758,7 @@ function laneRow(r) {
     return `<span class="node ${state} ${c.pre ? 'pre' : ''} ${mine ? 'mine' : 'other'} ${late ? 'late' : ''} ${state === 'future' && c.held ? 'visited' : ''}" style="left:${at(i)}%" data-tip="${tip}" tabindex="0"></span>`;
   }).join('');
   return `<div class="lane-row ${r.cells.some(isMineCell) ? 'row-mine' : ''}" data-href="#/p/${r.id}" data-name="${esc(r.name.toLowerCase())}">
-    <div class="lane-name">${thumb(r.id, r.thumb, 'sm')}<div class="ln-text">${statusBadge(r)}${r.legacy ? '<span class="st st-old" title="系統上線時匯入：前面的步驟在上線前就做完了">舊品</span>' : ''}${shopName(r.name, r.link)}</div></div>
+    <div class="lane-name">${thumb(r.id, r.thumb, 'sm')}<div class="ln-text">${statusBadge(r)}${r.legacy ? '<span class="st st-old" title="已經上架的商品：跳過做圖與文案，直接從優化開始">直接優化</span>' : ''}${shopName(r.name, r.link)}</div></div>
     <div class="lane-mobile">${r.done ? stepChip('done') : r.cells.filter((c) => c.state === 'current').map((c) => `${stepChip(c.step)}<span class="${c.waiting ? 'muted' : ''}">${esc(c.waiting ? waitText(c.step) : member(c.holder_id)?.name ?? '')}</span>`).join('') || stepChip(r.step)}</div>
     <div class="lane">
       <div class="rail" style="left:${at(0)}%;right:${100 - at(n - 1)}%"></div>
