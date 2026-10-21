@@ -1073,7 +1073,7 @@ function openReturnModal(it, fixed) {
   if (!targets.length) return toast('這一步前面沒有可以退回的步驟', true);
   openModal(`
     <h3>${fixed ? `← 退回${({ cutout: '美編', listing: '上架人員', optimizing: '設計師' })[fixed]}` : backText(it.step)}</h3>
-    <p class="muted">${esc(it.name)}：${it.step === 'optimizing' ? '他們做完會先交給行銷檢查，通過後再回到設計師。' : '改好後會直接回到你這裡。'}</p>
+    <p class="muted">${esc(it.name)}：${it.step === 'optimizing' ? '他們做完會先交給行銷檢查，通過後再回到設計師。' : it.step === 'mkt_check' && fixed && fixed !== 'optimizing' ? '他們改好會先回到設計師，設計師做完再交給你審一次。' : '改好後會直接回到你這裡。'}</p>
     <div class="field"><span>退回哪一步</span>
       ${targets.length === 1 ? `<b>${esc(TARGET_TEXT[targets[0]] || stepLabel(targets[0]))}</b>` : ''}
       <div class="hour-pick" ${targets.length === 1 ? 'hidden' : ''}>${targets.map((t) => `<label class="${targets.length === 1 ? 'on' : ''}"><input type="radio" name="rt" value="${t}" ${targets.length === 1 ? 'checked' : ''}>${esc(TARGET_TEXT[t] || stepLabel(t))}</label>`).join('')}</div></div>

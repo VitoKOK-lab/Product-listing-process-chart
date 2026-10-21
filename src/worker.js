@@ -810,7 +810,8 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params }) =>
         ...transition(db, p, open, me, {
           endReason: 'return', to, member, skipStint: !!running, startReason: 'return', note: text,
           // 改好後直接交回退回的人這一步
-          updates: { ...updates, return_to: from === 'optimizing' ? 'review' : from },
+          // 設計師退給美編／上架：做完先給行銷檢查；最後審核退給美編／上架：做完先回設計師，設計師做完再審一次
+          updates: { ...updates, return_to: from === 'optimizing' ? 'review' : from === 'mkt_check' && to !== 'optimizing' ? 'optimizing' : from },
           action: 'return', detail: `${STEP_LABEL[from]} → ${STEP_LABEL[to]}${running ? '（還在做）' : ''}：【${label}】${note.slice(0, 60)}`,
         }),
         ...nudge,
