@@ -783,9 +783,11 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params }) =>
       const from = open.step;
       const note = String(b.note ?? '').trim().slice(0, 2000); // 選填
       // 設計師有意見：退給某美編或某上架人員，他們做完一樣先跳給行銷檢查；最後審核退回固定交給設計師
-      const before = from === 'optimizing' ? ['cutout', 'listing'] : from === 'mkt_check' ? ['optimizing'] : FLOW.slice(0, Math.max(0, FLOW.indexOf(from)));
+      const before = from === 'optimizing' ? ['cutout', 'listing'] : from === 'mkt_check' ? ['optimizing', 'cutout', 'listing'] : FLOW.slice(0, Math.max(0, FLOW.indexOf(from)));
       const to = before.includes(b.target) ? b.target : null;
       if (!to) throw new HttpError(400, before.length ? '請選要退回哪一步' : '這一步前面沒有可以退回的步驟');
+      // 最後審核退回一定要寫原因，接手的人才知道要改什麼
+      if (from === 'mkt_check' && !note) throw new HttpError(400, '請寫退回原因');
       const updates = {};
       if (to === 'listing' && b.rename) updates.rename_pending = 1;
       const label = byAdmin ? '管理員退回' : from === 'optimizing' ? '設計師退件' : to === 'listing' ? (b.rename ? '文案・名稱要改' : '文案') : to === 'cutout' ? '圖' : STEP_LABEL[to];

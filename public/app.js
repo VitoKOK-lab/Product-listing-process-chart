@@ -1047,13 +1047,14 @@ const backText = (step) => (step === 'optimizing' ? '← 退件' : step === 'mkt
 const doneText = (step) => (step === 'optimizing' ? '已完成送審 →' : step === 'review' ? '推給設計師 →' : '完成 →');
 // 退回按鈕：審核直接分成「退回美編」「退回上架人員」，不用再選
 const backButtons = (step, attr) => {
+  if (step === 'mkt_check') return `<button class="btn danger" ${attr} data-target="optimizing">← 退回設計師</button><button class="btn danger" ${attr} data-target="cutout">← 退回美編</button><button class="btn danger" ${attr} data-target="listing">← 退回上架人員</button>`;
   if (step === 'review' || step === 'optimizing') return `<button class="btn danger" ${attr} data-target="cutout">← 退回美編</button><button class="btn danger" ${attr} data-target="listing">← 退回上架人員</button>`;
   return returnTargets(step).length ? `<button class="btn danger" ${attr}>${backText(step)}</button>` : '';
 };
 // 設計師退件回到審核：不是一般審核，標成「設計師退件」
 const designerBack = (it) => String(it.returned?.note || '').startsWith('【設計師退件】');
 const retNote = (n) => String(n || '').replace(/^【(審核|設計師退件)】\s*/, '');
-const returnTargets = (step) => step === 'optimizing' ? ['cutout', 'listing'] : step === 'mkt_check' ? ['optimizing'] : FLOW.slice(0, Math.max(0, FLOW.indexOf(step)));
+const returnTargets = (step) => step === 'optimizing' ? ['cutout', 'listing'] : step === 'mkt_check' ? ['optimizing', 'cutout', 'listing'] : FLOW.slice(0, Math.max(0, FLOW.indexOf(step)));
 
 // 做完動作後：在商品頁就回到今天要做，在清單就重新整理
 function afterStep(msg) {
@@ -1071,14 +1072,14 @@ function openReturnModal(it, fixed) {
   const targets = fixed ? [fixed] : returnTargets(it.step);
   if (!targets.length) return toast('這一步前面沒有可以退回的步驟', true);
   openModal(`
-    <h3>${fixed ? `← 退回${fixed === 'cutout' ? '美編' : '上架人員'}` : backText(it.step)}</h3>
+    <h3>${fixed ? `← 退回${({ cutout: '美編', listing: '上架人員', optimizing: '設計師' })[fixed]}` : backText(it.step)}</h3>
     <p class="muted">${esc(it.name)}：${it.step === 'optimizing' ? '他們做完會先交給行銷檢查，通過後再回到設計師。' : '改好後會直接回到你這裡。'}</p>
     <div class="field"><span>退回哪一步</span>
       ${targets.length === 1 ? `<b>${esc(TARGET_TEXT[targets[0]] || stepLabel(targets[0]))}</b>` : ''}
       <div class="hour-pick" ${targets.length === 1 ? 'hidden' : ''}>${targets.map((t) => `<label class="${targets.length === 1 ? 'on' : ''}"><input type="radio" name="rt" value="${t}" ${targets.length === 1 ? 'checked' : ''}>${esc(TARGET_TEXT[t] || stepLabel(t))}</label>`).join('')}</div></div>
     <label class="rename-chk" hidden><input type="checkbox" id="rt-rename"> 商品名稱要改（網址會跟著變）</label>
     <div class="field" id="rt-to-wrap"></div>
-    <label class="field"><span>哪裡有問題（選填）</span><textarea id="rt-note" placeholder="例：沒有佩戴示意、價格寫錯"></textarea></label>
+    <label class="field"><span>哪裡有問題（${it.step === 'mkt_check' ? '必填' : '選填'}）</span><textarea id="rt-note" placeholder="例：沒有佩戴示意、價格寫錯"></textarea></label>
     <div class="acts"><button class="btn" data-close>取消</button><button class="btn warn" id="rt-go" disabled>${it.step === 'optimizing' ? '退件' : '退回'}</button></div>`,
   (m, close) => {
     const target = () => m.querySelector('[name=rt]:checked')?.value;
@@ -1097,7 +1098,8 @@ function openReturnModal(it, fixed) {
       const rc = m.querySelector('.rename-chk');
       rc.hidden = target() !== 'listing';
       if (rc.hidden) m.querySelector('#rt-rename').checked = false;
-      m.querySelector('#rt-go').disabled = !target();
+      // 最後審核退回要寫原因
+      m.querySelector('#rt-go').disabled = !target() || (it.step === 'mkt_check' && !m.querySelector('#rt-note').value.trim());
     };
     m.addEventListener('input', sync);
     m.addEventListener('change', sync);
