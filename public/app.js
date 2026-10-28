@@ -413,9 +413,8 @@ function simpleCard(it) {
     </div>
     <div class="sc-acts">
       ${backButtons(it.step, `data-back="${esc(it.key)}"`)}
-      ${it.holder_id === S.me.id && stepPeople(it.step).length > 1 ? `<button class="btn" data-xfer="${esc(it.key)}">轉給…</button>` : ''}
+      ${it.holder_id === S.me.id ? `<button class="btn" data-xfer="${esc(it.key)}">轉給…</button>` : ''}
       ${it.claimable ? `<button class="btn" data-claim="${it.product_id}" data-v="${it.version}" data-step="${it.step}">我來做</button>` : ''}
-      ${['optimizing', 'listing', 'review'].includes(it.step) ? assigneeSelect(NEXT_STEP[it.step], `data-to="${esc(it.key)}"`) : ''}
       <button class="btn primary" data-done="${esc(it.key)}">${doneText(it.step)}</button>
     </div>
   </div>`;
@@ -464,8 +463,7 @@ async function viewStaffRadar() {
   $app.querySelectorAll('[data-xfer]').forEach((b) => { b.onclick = () => openTransferModal(byKey.get(b.dataset.xfer)); });
   $app.querySelectorAll('[data-done]').forEach((b) => {
     b.onclick = () => {
-      const to = $app.querySelector(`[data-to="${CSS.escape(b.dataset.done)}"]`);
-      openCompleteModal(byKey.get(b.dataset.done), Number(to?.value) || null);
+      openCompleteModal(byKey.get(b.dataset.done));
     };
   });
   $app.querySelectorAll('.to-pick').forEach((sel) => { sel.onclick = (e) => e.stopPropagation(); });
@@ -1028,10 +1026,13 @@ const soleFor = (step, returning) => {
   const ms = stepPeople(step);
   return ms.length === 1 && (returning || AUTO_STEPS.includes(step)) ? ms[0] : null;
 };
+// 交給誰：全部開放，這一步的職務排前面；只有一個人時預設選他
 function assigneeOptions(step, returning = false) {
   const one = soleFor(step, returning);
-  if (one) return `<option value="${one.id}" selected>${esc(one.name)}</option>`;
-  return `<option value="">${returning ? '交回原本做的人' : '不指定（誰看到誰接）'}</option>${stepPeople(step).map((m) => `<option value="${m.id}">${esc(m.name)}</option>`).join('')}`;
+  const role = S.stepRole[step];
+  const everyone = S.members.filter((m) => m.active && !m.is_admin)
+    .sort((a, b) => (b.roles.includes(role) ? 1 : 0) - (a.roles.includes(role) ? 1 : 0));
+  return `<option value="">${returning ? '交回原本做的人' : '不指定（誰看到誰接）'}</option>${everyone.map((m) => `<option value="${m.id}" ${one?.id === m.id ? 'selected' : ''}>${esc(m.name)}${m.roles.length ? `（${esc(rolesText(m))}）` : ''}</option>`).join('')}`;
 }
 const assigneeSelect = (step, attrs, returning = false) => {
   if (!step || step === 'done') return '';
@@ -1086,10 +1087,7 @@ function openReturnModal(it, fixed) {
     let lastT = targets.length === 1 ? targets[0] : null;
     // 只有一個人可能接：直接寫名字；多人才給選單
     const drawTo = () => {
-      const one = lastT && soleFor(lastT, true);
-      m.querySelector('#rt-to-wrap').innerHTML = one
-        ? `<span>交給</span><b>${esc(one.name)}</b><input type="hidden" id="rt-to" value="${one.id}">`
-        : `<span>交給誰（選填）</span><select id="rt-to">${lastT ? assigneeOptions(lastT, true) : ''}</select>`;
+      m.querySelector('#rt-to-wrap').innerHTML = `<span>交給誰</span><select id="rt-to">${lastT ? assigneeOptions(lastT, true) : ''}</select>`;
     };
     drawTo();
     const sync = () => {
@@ -1115,7 +1113,7 @@ function openReturnModal(it, fixed) {
 // 完成：按一下就結束，直接交給下一步（網址、改了什麼都是選填，在商品頁才填）
 // 不是我的工作：轉給同職務的另一個人（先選人，再按確定）
 function openTransferModal(it) {
-  const others = stepPeople(it.step).filter((m) => m.id !== S.me.id);
+  const others = S.members.filter((m) => m.active && !m.is_admin && m.id !== S.me.id);
   openModal(`
     <h3>轉給誰</h3>
     <p class="muted">${esc(it.name)}・${esc(stepLabel(it.step))}</p>
@@ -1135,19 +1133,33 @@ function openTransferModal(it) {
 }
 
 // 往下一步前再確認一次（退回本來就會先跳視窗，也是兩步）
+// 完成前再確認一次；下一步和交給誰全部開放，可以把工作傳給任何人（不選就照流程）
 function confirmStep(name, step, go) {
   const final = step === 'mkt_check';
-  const nx = final ? '結案完成' : stepLabel(NEXT_STEP[step]);
+  const steps = [...FLOW, 'done'].filter((s2) => s2 !== step);
+  const people = S.members.filter((m) => m.active && !m.is_admin);
   openModal(`
     <h3>${final ? '確定結案？' : '確定完成這一步？'}</h3>
     <p>${esc(name)}</p>
-    <p class="muted">${esc(stepLabel(step))} → ${esc(nx)}</p>
+    <label class="field"><span>下一步</span><select id="cf-step"><option value="">照流程（${esc(final ? '結案完成' : stepLabel(NEXT_STEP[step]))}）</option>${steps.map((s2) => `<option value="${s2}">${esc(s2 === 'done' ? '結案完成' : stepLabel(s2))}</option>`).join('')}</select></label>
+    <label class="field"><span>交給誰</span><select id="cf-to"><option value="">照流程自動</option>${people.map((m) => `<option value="${m.id}">${esc(m.name)}${m.roles.length ? `（${esc(rolesText(m))}）` : ''}</option>`).join('')}</select></label>
     <div class="acts"><button class="btn" data-close>取消</button><button class="btn primary" id="cf-go">確定</button></div>`,
-  (m, close) => { m.querySelector('#cf-go').onclick = () => { close(); go(); }; });
+  (m, close) => {
+    const toSel = m.querySelector('#cf-to');
+    m.querySelector('#cf-step').onchange = (e) => { toSel.disabled = e.target.value === 'done'; if (toSel.disabled) toSel.value = ''; };
+    m.querySelector('#cf-go').onclick = () => {
+      const extra = {};
+      const st = m.querySelector('#cf-step').value;
+      if (st) extra.to_step = st;
+      if (toSel.value) extra.assignee = Number(toSel.value);
+      close();
+      go(extra);
+    };
+  });
 }
 
-function openCompleteModal(it, assignee = null) {
-  confirmStep(it.name, it.step, () => stepAction(it, 'complete', assignee ? { assignee } : {}).then((ok) => ok && afterStep(it.step === 'mkt_check' ? '審核通過，已完成' : it.step === 'review' ? '審核通過，交給設計師' : '已完成，交給下一步')));
+function openCompleteModal(it) {
+  confirmStep(it.name, it.step, (extra) => stepAction(it, 'complete', extra).then((ok) => ok && afterStep(it.step === 'mkt_check' ? '審核通過，已完成' : it.step === 'review' ? '審核通過，交給設計師' : '已完成，交給下一步')));
 }
 
 
@@ -1206,7 +1218,7 @@ function actionPanel(p) {
   const foot = (btn, miss = '') => `<div class="flowbar">
       <div class="fb-back">${canReturn ? backButtons(step, 'data-open-return').replace(/class="btn danger"/g, 'class="btn danger act"') : ''}</div>
       <div class="fb-cur"><b>${esc(stepLabel(step))}</b></div>
-      <div class="fb-next">${assigneeSelect(p.return_to && p.return_to !== step ? p.return_to : NEXT_STEP[step], 'id="cp-to"')}${btn}</div>
+      <div class="fb-next">${btn}</div>
     </div>
     <div class="missing fb-miss" id="miss">${esc(miss)}</div>`;
   const toTxt = esc(nextHint(p, step));
@@ -1479,9 +1491,7 @@ function bindProduct(p) {
     const optNote = document.getElementById('opt-note');
     done.onclick = () => {
       const extra = slUrl ? { sl_url: slUrl.value.trim() } : optNote ? { note: optNote.value.trim() } : {};
-      const to = Number(document.getElementById('cp-to')?.value) || null;
-      if (to) extra.assignee = to;
-      confirmStep(p.name, cur.step, () => doAction('complete', extra, cur.step === 'mkt_check' ? '審核通過，已完成' : `已交給 ${nextHint(p, cur.step)}`));
+      confirmStep(p.name, cur.step, (pick) => doAction('complete', { ...extra, ...pick }, cur.step === 'mkt_check' ? '審核通過，已完成' : `已交給 ${nextHint(p, cur.step)}`));
     };
   }
 

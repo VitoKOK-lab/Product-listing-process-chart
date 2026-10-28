@@ -690,8 +690,9 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params }) =>
         action: extra.action || 'complete', detail: `${STEP_LABEL[from]}完成${extra.detail ? `：${extra.detail}` : ''}`,
       });
     }
-    // 被後面的人退回、改好了：直接交回退回的那一步
-    const to = p.return_to && p.return_to !== from ? p.return_to : NEXT[from];
+    // 完成時自己選下一步（全部開放）；沒選就照流程：被退回的交回退回的那一步，否則下一步
+    const picked = [...FLOW, 'done'].includes(b.to_step) && b.to_step !== from ? b.to_step : null;
+    const to = picked || (p.return_to && p.return_to !== from ? p.return_to : NEXT[from]);
     // 文案那一段已經在進行（同時開始的），不用再開一段
     const running = to !== 'done' && await openStint(db, id, to);
     const member = to === 'done' || running ? null : (assignee ?? await holderFor(db, p, to));
@@ -829,7 +830,8 @@ route('POST', '/api/products/:id/action', async ({ db, request, me, params }) =>
       // 誰都可以轉給同職務的人（例如 Jessica 轉給夏麗君）
       need();
       const to = b.member_id ? intId(b.member_id, '成員') : null;
-      if (to && !(await memberHasRole(db, to, open.role))) throw new HttpError(400, `此人不是「${ROLES[open.role]}」`);
+      // 全部開放：可以轉給任何在職的人
+      if (to && !(await db.prepare('SELECT id FROM members WHERE id = ? AND active = 1').bind(to).first())) throw new HttpError(400, '找不到這個人');
       if (to === open.member_id) return json({ ok: true });
       const updates = to && ['open', 'review', 'mkt_check'].includes(open.step) ? { marketer_id: to } : {};
       stmts = handOver(db, p, open, me, { member: to, reason: 'reassign', updates, action: 'reassign', detail: STEP_LABEL[open.step] });
